@@ -20,6 +20,7 @@ test = ["pytest>=8,<9", "pytest-asyncio>=0.24,<1"]
 
 [project.scripts]
 multi-llm = "multi_llm.cli:main"
+multi-llm-native-host = "multi_llm.research.native_host:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/multi_llm"]

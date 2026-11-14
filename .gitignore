@@ -1,7 +1,7 @@
 __pycache__/
 *.py[cod]
 .pytest_cache/
-.pytest-tmp/
+.pytest-tmp*/
 .testdeps/
 .venv/
 .mypy_cache/
@@ -10,9 +10,12 @@ __pycache__/
 htmlcov/
 dist/
 *.egg-info/
-data/*.db
+data/*.db*
 data/*.sqlite*
 data/*.lock
+data/*-wal
+data/*-shm
+data/*-journal
 config/local.json
 exports/
 P04_RUNS.json
@@ -21,3 +24,4 @@ P04_RUNS.json
 *.log
 *.tmp
 *.bak
+*.dump
