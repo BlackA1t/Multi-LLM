@@ -9,6 +9,9 @@ __pycache__/
 .coverage
 htmlcov/
 dist/
+extension/node_modules/
+extension/dist/
+.chrome-p103-profile*/
 *.egg-info/
 data/*.db*
 data/*.sqlite*
@@ -25,3 +28,4 @@ P04_RUNS.json
 *.tmp
 *.bak
 *.dump
+*.native-host.json

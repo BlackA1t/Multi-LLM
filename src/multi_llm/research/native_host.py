@@ -19,7 +19,22 @@ def _binary_stdio() -> tuple[object, object]:
 
 def _database_path() -> Path:
     configured = os.environ.get("MULTI_LLM_RESEARCH_DB")
-    return Path(configured) if configured else Path.cwd() / "data" / "research.db"
+    if configured is not None:
+        if not configured.strip():
+            raise RuntimeError("MULTI_LLM_RESEARCH_DB must not be empty")
+        path = Path(configured).expanduser()
+        if not path.is_absolute():
+            raise RuntimeError("MULTI_LLM_RESEARCH_DB must be an absolute path")
+    else:
+        local_app_data = os.environ.get("LOCALAPPDATA")
+        if not local_app_data or not local_app_data.strip():
+            raise RuntimeError("LOCALAPPDATA is unavailable for the research database")
+        base = Path(local_app_data).expanduser()
+        if not base.is_absolute() or base == Path(base.anchor):
+            raise RuntimeError("LOCALAPPDATA is invalid for the research database")
+        path = base / "Multi-LLM" / "research.db"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    return path
 
 
 def run(stdin: object, stdout: object, service: ResearchSessionService) -> int:

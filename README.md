@@ -71,3 +71,28 @@ Credential Manager storage использует версионированные
 В `multi_llm.research` реализовано автономное ядро исследовательских сессий с фиксированным маршрутом `DRAFT → INDEPENDENT → COMPARISON → CRITIQUE → FACT_CHECK → ARBITRATION → REVIEW → DONE`. Состояние хранится отдельно от P0.4 в `data/research.db`; включены внешние ключи, WAL, транзакционные мутации, optimistic revision и idempotency keys.
 
 Минимальный Chrome Native Messaging Host запускается entry point `multi-llm-native-host`. Протокол v1 использует JSON-фреймы с нативным 32-битным префиксом длины и поддерживает только `system.hello`, `session.create/get/list/start/pause/resume/advance` и `task.list`. Host не регистрируется автоматически и не выполняет модельные или сетевые вызовы. Chrome UI, clipboard-интеграция и установка FreeLLMAPI в P1.0.2 намеренно отсутствуют.
+
+## Chrome Extension (P1.0.3)
+
+Исходники Manifest V3 расширения находятся в `extension/`. Сборка полностью локальная:
+
+```powershell
+Set-Location extension
+npm ci
+npm test
+npm run build
+```
+
+Собранный каталог `extension/dist` загружается через `chrome://extensions` → «Загрузить распакованное расширение». Расширение использует только разрешения `sidePanel`, `nativeMessaging`, `storage`; content scripts и доступ к сайтам отсутствуют.
+
+Native Host регистрируется только явным запуском пользователя и только для фактического ID загруженного расширения:
+
+```powershell
+$extensionId = '<ID из chrome://extensions>'
+$hostExe = (Resolve-Path '.\.venv\Scripts\multi-llm-native-host.exe').Path
+.\scripts\register_native_host.ps1 -ExtensionId $extensionId -HostExePath $hostExe -WhatIf
+.\scripts\register_native_host.ps1 -ExtensionId $extensionId -HostExePath $hostExe
+.\scripts\check_native_host.ps1 -ExtensionId $extensionId
+```
+
+Полная ручная процедура и штатный unregister описаны в `P103_MANUAL_ACCEPTANCE.md`. Native Host по умолчанию использует стабильную базу `%LOCALAPPDATA%\Multi-LLM\research.db`. Для осознанного использования существующей dev-базы задайте абсолютный `MULTI_LLM_RESEARCH_DB`; автоматического переноса данных нет.
