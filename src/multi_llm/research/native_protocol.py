@@ -43,6 +43,7 @@ class SessionCreateArgs(BaseModel):
     model_config = ConfigDict(extra="forbid")
     question: str = Field(min_length=1, max_length=2 * 1024 * 1024)
     title: str | None = Field(default=None, max_length=200)
+    perplexity_prompt: str | None = Field(default=None, max_length=2 * 1024 * 1024)
     idempotency_key: str = Field(min_length=1, max_length=200)
 
 
@@ -63,7 +64,13 @@ class MutationArgs(SessionIdArgs):
 
 
 class SessionStartArgs(MutationArgs):
-    assignments: list[Assignment] = Field(min_length=4, max_length=4)
+    assignments: list[Assignment] | None = None
+
+
+class SessionUpdateIntakeArgs(MutationArgs):
+    question: str = Field(min_length=1, max_length=2 * 1024 * 1024)
+    title: str | None = Field(default=None, max_length=200)
+    perplexity_prompt: str | None = Field(default=None, max_length=2 * 1024 * 1024)
 
 
 class SessionAdvanceArgs(MutationArgs):
@@ -216,7 +223,7 @@ class NativeDispatcher:
             return {
                 "protocol_version": PROTOCOL_VERSION,
                 "operations": [
-                    "system.hello", "session.create", "session.get", "session.list",
+                    "system.hello", "session.create", "session.update_intake", "session.get", "session.list",
                     "session.start", "session.pause", "session.resume", "session.advance", "task.list",
                     "task.prompt.meta", "task.prompt.chunk", "task.prompt.copy", "task.mark_awaiting",
                     "response.upload.begin", "response.upload.part", "response.upload.commit",
@@ -230,6 +237,9 @@ class NativeDispatcher:
         if operation == "session.get":
             args = SessionIdArgs.model_validate(raw_args)
             return self.service.get(args.session_id).model_dump(mode="json")
+        if operation == "session.update_intake":
+            args = SessionUpdateIntakeArgs.model_validate(raw_args)
+            return self.service.update_intake(**args.model_dump()).model_dump(mode="json")
         if operation == "session.list":
             args = SessionListArgs.model_validate(raw_args)
             sessions = self.service.list(limit=args.limit, offset=args.cursor)

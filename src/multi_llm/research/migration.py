@@ -162,6 +162,10 @@ MIGRATIONS: tuple[tuple[int, str], ...] = (
         CREATE INDEX IF NOT EXISTS ix_response_revisions_result
             ON response_revisions(result_id, version);
     """),
+    (3, """
+        ALTER TABLE research_sessions ADD COLUMN perplexity_prompt TEXT;
+        ALTER TABLE research_sessions ADD COLUMN intake_version INTEGER NOT NULL DEFAULT 1;
+    """),
 )
 
 

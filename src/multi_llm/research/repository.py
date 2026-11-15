@@ -22,13 +22,14 @@ from .models import (
     SessionEvent,
     SessionStatus,
     SessionSummary,
+    TaskKind,
     TaskStatus,
     UploadPartReceipt,
     UploadReservation,
     utcnow,
 )
 from .prompts import PromptComposer
-from .provider_catalog import is_approved_provider
+from .provider_catalog import PERPLEXITY_SEARCH_ASSIGNMENT, R0_ASSIGNMENTS, is_approved_provider
 from .workflow import (
     ResearchDomainError,
     RoundManager,
@@ -108,6 +109,7 @@ class ResearchRepository:
         question: str,
         title: str | None,
         idempotency_key: str,
+        perplexity_prompt: str | None = None,
     ) -> ResearchSession:
         now = _timestamp()
         with self._transaction() as connection:
@@ -116,20 +118,59 @@ class ResearchRepository:
                 (idempotency_key,),
             ).fetchone()
             if existing:
-                if existing["question"] != question or existing["title"] != title:
+                if (existing["question"] != question or existing["title"] != title
+                        or existing["perplexity_prompt"] != perplexity_prompt):
                     raise ResearchDomainError("BAD_REQUEST", "Idempotency key was used with different arguments")
                 return self._session(existing)
             session_id = str(uuid4())
             connection.execute(
                 """INSERT INTO research_sessions(
                     session_id, question, title, phase, status, revision, gap_reason,
-                    create_idempotency_key, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, 0, NULL, ?, ?, ?)""",
-                (session_id, question, title, Phase.DRAFT.value, SessionStatus.ACTIVE.value, idempotency_key, now, now),
+                    create_idempotency_key, created_at, updated_at, perplexity_prompt, intake_version
+                ) VALUES (?, ?, ?, ?, ?, 0, NULL, ?, ?, ?, ?, 1)""",
+                (session_id, question, title, Phase.DRAFT.value, SessionStatus.ACTIVE.value,
+                 idempotency_key, now, now, perplexity_prompt),
             )
             self._event(connection, session_id, "session.created", None, 0, now)
             row = connection.execute("SELECT * FROM research_sessions WHERE session_id = ?", (session_id,)).fetchone()
             return self._session(row)
+
+    def update_intake(
+        self,
+        session_id: UUID | str,
+        *,
+        question: str,
+        title: str | None,
+        perplexity_prompt: str | None,
+        expected_revision: int,
+        idempotency_key: str,
+    ) -> ResearchSession:
+        payload = {
+            "session_id": str(session_id), "question": question, "title": title,
+            "perplexity_prompt": perplexity_prompt, "expected_revision": expected_revision,
+        }
+        with self._transaction() as connection:
+            repeated = self._idempotent_result(connection, "session.update_intake", idempotency_key, payload)
+            if repeated:
+                return repeated
+            row = self._locked_session(connection, session_id, expected_revision)
+            if Phase(row["phase"]) != Phase.DRAFT or SessionStatus(row["status"]) != SessionStatus.ACTIVE:
+                raise ResearchDomainError("INVALID_PHASE", "Intake can only be edited before research starts")
+            now = _timestamp()
+            cursor = connection.execute(
+                """UPDATE research_sessions SET question = ?, title = ?, perplexity_prompt = ?,
+                   intake_version = intake_version + 1, revision = revision + 1, updated_at = ?
+                   WHERE session_id = ? AND revision = ?""",
+                (question, title, perplexity_prompt, now, str(session_id), expected_revision),
+            )
+            if cursor.rowcount != 1:
+                raise StaleRevisionError()
+            updated = self._session(connection.execute(
+                "SELECT * FROM research_sessions WHERE session_id = ?", (str(session_id),)
+            ).fetchone())
+            self._event(connection, str(session_id), "session.intake_updated", None, updated.revision, now)
+            self._store_idempotency(connection, "session.update_intake", idempotency_key, payload, updated)
+            return updated
 
     def get_session(self, session_id: UUID | str) -> ResearchSession:
         with closing(self._connection()) as connection:
@@ -190,7 +231,7 @@ class ResearchRepository:
         *,
         expected_revision: int,
         idempotency_key: str,
-        assignments: Sequence[Assignment],
+        assignments: Sequence[Assignment] = R0_ASSIGNMENTS,
     ) -> ResearchSession:
         payload = {
             "session_id": str(session_id), "expected_revision": expected_revision,
@@ -222,9 +263,33 @@ class ResearchRepository:
                     (task_id, str(session_id), round_id, Phase.INDEPENDENT.value, "INDEPENDENT_RESPONSE",
                      assignment.provider_id, assignment.role, ordinal, TaskStatus.PROMPT_READY.value, now, now),
                 )
-                artifact = PromptComposer.independent(UUID(task_id), row["question"], assignment.role)
+                artifact = PromptComposer.verbatim(UUID(task_id), row["question"])
                 if artifact.size_bytes > MAX_PROMPT_BYTES:
                     raise ResearchDomainError("TOO_LARGE", "Prompt artifact exceeds the size limit")
+                connection.execute(
+                    "INSERT INTO prompt_artifacts VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    (str(artifact.prompt_id), task_id, artifact.version, artifact.content,
+                     artifact.size_bytes, artifact.sha256, artifact.created_at.isoformat()),
+                )
+            if row["perplexity_prompt"]:
+                assignment = PERPLEXITY_SEARCH_ASSIGNMENT
+                ordinal = len(assignments)
+                connection.execute(
+                    "INSERT INTO session_participants VALUES (?, ?, ?, ?, ?, 1)",
+                    (str(uuid4()), str(session_id), assignment.provider_id, assignment.role, ordinal),
+                )
+                task_id = str(uuid4())
+                connection.execute(
+                    """INSERT INTO research_tasks VALUES (
+                        ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, 0, ?, ?
+                    )""",
+                    (task_id, str(session_id), round_id, Phase.INDEPENDENT.value,
+                     TaskKind.SEARCH_EVIDENCE.value, assignment.provider_id, assignment.role,
+                     ordinal, TaskStatus.PROMPT_READY.value, now, now),
+                )
+                artifact = PromptComposer.verbatim(UUID(task_id), row["perplexity_prompt"])
+                if artifact.size_bytes > MAX_PROMPT_BYTES:
+                    raise ResearchDomainError("TOO_LARGE", "Perplexity prompt exceeds the size limit")
                 connection.execute(
                     "INSERT INTO prompt_artifacts VALUES (?, ?, ?, ?, ?, ?, ?)",
                     (str(artifact.prompt_id), task_id, artifact.version, artifact.content,
@@ -284,10 +349,12 @@ class ResearchRepository:
             phase = Phase(row["phase"])
             if phase == Phase.DRAFT:
                 raise ResearchDomainError("INVALID_PHASE", "Start the session before advancing")
-            task_rows = connection.execute(
-                "SELECT status, gap_reason FROM research_tasks WHERE session_id = ? AND phase = ? ORDER BY ordinal",
-                (str(session_id), phase.value),
-            ).fetchall()
+            task_sql = "SELECT status, gap_reason FROM research_tasks WHERE session_id = ? AND phase = ?"
+            task_parameters: list[object] = [str(session_id), phase.value]
+            if phase == Phase.INDEPENDENT:
+                task_sql += " AND kind = ?"
+                task_parameters.append(TaskKind.INDEPENDENT_RESPONSE.value)
+            task_rows = connection.execute(task_sql + " ORDER BY ordinal", task_parameters).fetchall()
             has_gap = RoundManager.validate_gate(
                 phase,
                 [TaskStatus(item["status"]) for item in task_rows],
@@ -749,7 +816,7 @@ class ResearchRepository:
             version = connection.execute(
                 "SELECT COALESCE(MAX(version), 0) + 1 FROM prompt_artifacts WHERE task_id = ?", (str(task_id),)
             ).fetchone()[0]
-            artifact = PromptComposer.independent(UUID(str(task_id)), session["question"], task["role"], provider_id=provider_id, version=version)
+            artifact = PromptComposer.verbatim(UUID(str(task_id)), session["question"], version=version)
             if artifact.size_bytes > MAX_PROMPT_BYTES:
                 raise ResearchDomainError("TOO_LARGE", "Prompt artifact exceeds the size limit")
             connection.execute(
@@ -879,6 +946,7 @@ class ResearchRepository:
     def _session(row: sqlite3.Row) -> ResearchSession:
         return ResearchSession(
             session_id=row["session_id"], question=row["question"], title=row["title"],
+            perplexity_prompt=row["perplexity_prompt"], intake_version=row["intake_version"],
             phase=row["phase"], status=row["status"], revision=row["revision"],
             gap_reason=row["gap_reason"], created_at=row["created_at"], updated_at=row["updated_at"],
         )

@@ -1,5 +1,4 @@
 import type {
-  Assignment,
   BridgeReply,
   BridgeStatusMessage,
   ConnectionState,
@@ -35,13 +34,6 @@ async function sha256(bytes: Uint8Array): Promise<string> {
   const digest = await crypto.subtle.digest("SHA-256", bytes as BufferSource);
   return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
 }
-
-export const INDEPENDENT_ASSIGNMENTS: Assignment[] = [
-  { provider_id: "gemini", role: "independent_gemini" },
-  { provider_id: "deepseek", role: "independent_deepseek" },
-  { provider_id: "qwen", role: "independent_qwen" },
-  { provider_id: "grok", role: "independent_grok" },
-];
 
 export class UiBridgeError extends Error {
   constructor(
@@ -93,7 +85,7 @@ export class NativeClient {
 }
 
 export interface MutationCommand {
-  op: "session.start" | "session.pause" | "session.resume" | "session.advance";
+  op: "session.update_intake" | "session.start" | "session.pause" | "session.resume" | "session.advance";
   args: Record<string, unknown>;
 }
 
@@ -109,10 +101,11 @@ export class SessionController {
     return this.client.connect();
   }
 
-  create(question: string, title: string | undefined, idempotencyKey: string): Promise<ResearchSession> {
+  create(question: string, title: string | undefined, perplexityPrompt: string | undefined, idempotencyKey: string): Promise<ResearchSession> {
     return this.client.request("session.create", {
       question,
       ...(title?.trim() ? { title: title.trim() } : {}),
+      ...(perplexityPrompt?.trim() ? { perplexity_prompt: perplexityPrompt } : {}),
       idempotency_key: idempotencyKey,
     }, isResearchSession);
   }
@@ -236,7 +229,24 @@ export class SessionController {
         session_id: session.session_id,
         expected_revision: session.revision,
         idempotency_key: idempotencyKey,
-        assignments: INDEPENDENT_ASSIGNMENTS,
+      },
+    };
+  }
+
+  updateIntakeCommand(
+    session: ResearchSession,
+    question: string,
+    title: string | undefined,
+    perplexityPrompt: string | undefined,
+    idempotencyKey: string = crypto.randomUUID(),
+  ): MutationCommand {
+    return {
+      op: "session.update_intake",
+      args: {
+        session_id: session.session_id, expected_revision: session.revision,
+        idempotency_key: idempotencyKey, question,
+        ...(title?.trim() ? { title: title.trim() } : {}),
+        ...(perplexityPrompt?.trim() ? { perplexity_prompt: perplexityPrompt } : {}),
       },
     };
   }

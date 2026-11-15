@@ -6,7 +6,8 @@ from uuid import uuid4
 
 import pytest
 
-from multi_llm.research import Assignment, ResearchSessionService, TaskStatus
+from multi_llm.research import ResearchSessionService, TaskStatus
+from multi_llm.research.provider_catalog import R0_ASSIGNMENTS
 from multi_llm.research.repository import MAX_CHUNK_BYTES, MAX_RESPONSE_BYTES
 from multi_llm.research.migration import MIGRATIONS
 from multi_llm.research.native_protocol import NativeDispatcher, encode_message
@@ -14,12 +15,7 @@ from multi_llm.research.workflow import ResearchDomainError
 
 
 def assignments():
-    return [
-        Assignment(provider_id="gemini", role="independent_gemini"),
-        Assignment(provider_id="deepseek", role="independent_deepseek"),
-        Assignment(provider_id="qwen", role="independent_qwen"),
-        Assignment(provider_id="grok", role="independent_grok"),
-    ]
+    return list(R0_ASSIGNMENTS)
 
 
 def started_service(tmp_path, *, clipboard_writer=lambda _text: None):
@@ -62,10 +58,10 @@ def test_v1_database_migrates_without_losing_session_task_or_prompt(tmp_path):
     assert str(service.list_tasks(session_id)[0].task_id) == task_id
     assert service.repository.get_prompt_text(session_id, task_id) == "original P103 prompt"
     with sqlite3.connect(path) as connection:
-        assert [row[0] for row in connection.execute("SELECT version FROM schema_migrations ORDER BY version")] == [1, 2]
+        assert [row[0] for row in connection.execute("SELECT version FROM schema_migrations ORDER BY version")] == [1, 2, 3]
     ResearchSessionService(path)
     with sqlite3.connect(path) as connection:
-        assert connection.execute("SELECT COUNT(*) FROM schema_migrations").fetchone()[0] == 2
+        assert connection.execute("SELECT COUNT(*) FROM schema_migrations").fetchone()[0] == 3
 
 
 def upload(
@@ -260,13 +256,13 @@ def test_revision_preserves_original_and_is_blocked_after_phase_change(tmp_path)
 def test_reassign_updates_only_pending_task_and_prompt_version(tmp_path):
     service, session, tasks = started_service(tmp_path)
     changed = service.reassign_task(
-        session.session_id, tasks[0].task_id, provider_id="copilot",
+        session.session_id, tasks[0].task_id, provider_id="perplexity",
         expected_revision=session.revision, idempotency_key="reassign",
     )
-    assert changed.provider_id == "copilot" and changed.status == TaskStatus.PROMPT_READY
+    assert changed.provider_id == "perplexity" and changed.status == TaskStatus.PROMPT_READY
     assert service.prompt_metadata(session.session_id, changed.task_id).version == 2
     untouched = service.list_tasks(session.session_id)[1:]
-    assert [task.provider_id for task in untouched] == ["deepseek", "qwen", "grok"]
+    assert [task.provider_id for task in untouched] == [item.provider_id for item in R0_ASSIGNMENTS[1:]]
     current = service.get(session.session_id)
     with pytest.raises(ResearchDomainError):
         service.reassign_task(
@@ -284,7 +280,7 @@ def test_reassign_updates_only_pending_task_and_prompt_version(tmp_path):
 
 def test_gate_requires_exact_states_and_stored_reason(tmp_path):
     service, session, tasks = started_service(tmp_path)
-    for index in range(3):
+    for index in range(7):
         receipt = upload(service, session, tasks[index], f"answer-{index}", f"answer-{index}")
         session = service.get(session.session_id)
     with pytest.raises(ResearchDomainError):
@@ -293,7 +289,7 @@ def test_gate_requires_exact_states_and_stored_reason(tmp_path):
             idempotency_key="bad-gap", gap_reason="one source missing",
         )
     unavailable = service.mark_unavailable(
-        session.session_id, tasks[3].task_id, reason="service unavailable",
+        session.session_id, tasks[7].task_id, reason="service unavailable",
         expected_revision=session.revision, idempotency_key="unavailable",
     )
     session = service.get(session.session_id)

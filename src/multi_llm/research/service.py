@@ -12,6 +12,7 @@ from .models import (
     UploadReservation,
 )
 from .repository import MAX_CHUNK_BYTES, ResearchRepository
+from .provider_catalog import R0_ASSIGNMENTS
 from .workflow import ResearchDomainError
 
 
@@ -23,14 +24,44 @@ class ResearchSessionService:
         self.clipboard_writer = clipboard_writer
 
     def create(
-        self, *, question: str, idempotency_key: str, title: str | None = None
+        self, *, question: str, idempotency_key: str, title: str | None = None,
+        perplexity_prompt: str | None = None,
     ) -> ResearchSession:
         if not question.strip():
-            raise ResearchDomainError("BAD_REQUEST", "Question must not be empty")
+            raise ResearchDomainError("BAD_REQUEST", "Research prompt must not be empty")
+        if len(question.encode("utf-8")) > 2 * 1024 * 1024:
+            raise ResearchDomainError("TOO_LARGE", "Research prompt exceeds the size limit")
+        perplexity_prompt = perplexity_prompt if perplexity_prompt and perplexity_prompt.strip() else None
+        if perplexity_prompt and len(perplexity_prompt.encode("utf-8")) > 2 * 1024 * 1024:
+            raise ResearchDomainError("TOO_LARGE", "Perplexity prompt exceeds the size limit")
         if not idempotency_key.strip():
             raise ResearchDomainError("BAD_REQUEST", "An idempotency key is required")
         return self.repository.create_session(
-            question=question, title=title, idempotency_key=idempotency_key
+            question=question, title=title, perplexity_prompt=perplexity_prompt,
+            idempotency_key=idempotency_key,
+        )
+
+    def update_intake(
+        self,
+        session_id: UUID | str,
+        *,
+        question: str,
+        title: str | None,
+        perplexity_prompt: str | None,
+        expected_revision: int,
+        idempotency_key: str,
+    ) -> ResearchSession:
+        if not question.strip():
+            raise ResearchDomainError("BAD_REQUEST", "Research prompt must not be empty")
+        if len(question.encode("utf-8")) > 2 * 1024 * 1024:
+            raise ResearchDomainError("TOO_LARGE", "Research prompt exceeds the size limit")
+        perplexity_prompt = perplexity_prompt if perplexity_prompt and perplexity_prompt.strip() else None
+        if perplexity_prompt and len(perplexity_prompt.encode("utf-8")) > 2 * 1024 * 1024:
+            raise ResearchDomainError("TOO_LARGE", "Perplexity prompt exceeds the size limit")
+        return self.repository.update_intake(
+            session_id, question=question, title=title,
+            perplexity_prompt=perplexity_prompt, expected_revision=expected_revision,
+            idempotency_key=idempotency_key,
         )
 
     def get(self, session_id: UUID | str) -> ResearchSession:
@@ -47,19 +78,16 @@ class ResearchSessionService:
         *,
         expected_revision: int,
         idempotency_key: str,
-        assignments: Sequence[Assignment],
+        assignments: Sequence[Assignment] | None = None,
     ) -> ResearchSession:
-        if len(assignments) != 4:
-            raise ResearchDomainError("BAD_REQUEST", "Exactly four independent assignments are required")
-        providers = [item.provider_id for item in assignments]
-        roles = [item.role for item in assignments]
-        if len(set(providers)) != 4 or len(set(roles)) != 4:
-            raise ResearchDomainError("BAD_REQUEST", "Independent providers and roles must be unique")
+        fixed = list(R0_ASSIGNMENTS)
+        if assignments is not None and list(assignments) != fixed:
+            raise ResearchDomainError("BAD_REQUEST", "The R0 provider set is fixed by the server")
         return self.repository.start(
             session_id,
             expected_revision=expected_revision,
             idempotency_key=idempotency_key,
-            assignments=assignments,
+            assignments=fixed,
         )
 
     def pause(

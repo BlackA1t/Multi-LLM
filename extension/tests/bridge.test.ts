@@ -20,7 +20,7 @@ class FakePort implements NativePortLike {
 }
 
 const operations = [
-  "system.hello", "session.create", "session.get", "session.list", "session.start",
+  "system.hello", "session.create", "session.update_intake", "session.get", "session.list", "session.start",
   "session.pause", "session.resume", "session.advance", "task.list",
   "task.prompt.meta", "task.prompt.chunk", "task.prompt.copy", "task.mark_awaiting",
   "response.upload.begin", "response.upload.part", "response.upload.commit",

@@ -9,6 +9,8 @@ const session: ResearchSession = {
   session_id: "123e4567-e89b-42d3-a456-426614174000",
   question: "<img src=x onerror=alert('unsafe')>",
   title: "Безопасный рендер",
+  perplexity_prompt: null,
+  intake_version: 1,
   phase: "DRAFT",
   status: "ACTIVE",
   revision: 0,
@@ -56,9 +58,9 @@ describe("UI safety and feedback", () => {
     const user = userEvent.setup();
     const create = vi.fn().mockRejectedValue(new Error("disconnected"));
     render(<CreateSessionForm onCreate={create} disabled={false} />);
-    const question = screen.getByLabelText("Исследовательский вопрос");
+    const question = screen.getByLabelText("Основной промпт для восьми R0");
     await user.type(question, "Синтетический вопрос");
-    await user.click(screen.getByRole("button", { name: /Создать исследование/ }));
+    await user.click(screen.getByRole("button", { name: /Создать и начать/ }));
     expect(question).toHaveValue("Синтетический вопрос");
   });
 
@@ -71,9 +73,9 @@ describe("UI safety and feedback", () => {
   it("requires a non-empty question", () => {
     const create = vi.fn();
     render(<CreateSessionForm onCreate={create} disabled={false} />);
-    const submit = screen.getByRole("button", { name: /Создать исследование/ });
+    const submit = screen.getByRole("button", { name: /Создать и начать/ });
     expect(submit).toBeDisabled();
-    fireEvent.change(screen.getByLabelText("Исследовательский вопрос"), { target: { value: " " } });
+    fireEvent.change(screen.getByLabelText("Основной промпт для восьми R0"), { target: { value: " " } });
     expect(submit).toBeDisabled();
   });
 

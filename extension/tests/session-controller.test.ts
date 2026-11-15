@@ -1,12 +1,14 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import { INDEPENDENT_ASSIGNMENTS, SessionController } from "../src/state/session-controller";
+import { SessionController } from "../src/state/session-controller";
 import type { ResearchSession, ResearchTask } from "../src/native/contracts";
 
 const session: ResearchSession = {
   session_id: "123e4567-e89b-42d3-a456-426614174000",
   question: "Синтетический вопрос",
   title: "Тест",
+  perplexity_prompt: null,
+  intake_version: 1,
   phase: "DRAFT",
   status: "ACTIVE",
   revision: 4,
@@ -36,14 +38,12 @@ describe("SessionController", () => {
 
   beforeEach(() => sendMessage.mockReset());
 
-  it("builds four distinct fixed assignments and preserves a logical action key", () => {
+  it("lets the server select the fixed R0 assignments and preserves a logical action key", () => {
     const controller = new SessionController();
     const command = controller.startCommand(session, "logical-action-key");
     expect(command.args.idempotency_key).toBe("logical-action-key");
     expect(command.args.expected_revision).toBe(4);
-    expect(command.args.assignments).toEqual(INDEPENDENT_ASSIGNMENTS);
-    expect(new Set(INDEPENDENT_ASSIGNMENTS.map((item) => item.provider_id)).size).toBe(4);
-    expect(new Set(INDEPENDENT_ASSIGNMENTS.map((item) => item.role)).size).toBe(4);
+    expect(command.args).not.toHaveProperty("assignments");
     expect(controller.advanceCommand(session, "gap-key", "  explicit gap  ").args).toMatchObject({
       idempotency_key: "gap-key", gap_reason: "explicit gap",
     });

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type FormEvent, type RefObject } from "react";
+import { useEffect, useRef, useState, type RefObject } from "react";
 
 import type { ConnectionState, Phase, ResearchSession, ResearchTask, ResponseMetadata, SessionSummary } from "../../native/contracts";
 import { openOfficialProvider, PROVIDERS, providerById } from "../../state/provider-catalog";
@@ -117,23 +117,24 @@ export function ConnectionHelp({ state, onReconnect, busy }: {
 }
 
 export function CreateSessionForm({ onCreate, disabled }: {
-  onCreate: (question: string, title?: string) => Promise<void>;
+  onCreate: (question: string, title?: string, perplexityPrompt?: string, startNow?: boolean) => Promise<void>;
   disabled: boolean;
 }) {
   const [title, setTitle] = useState("");
   const [question, setQuestion] = useState("");
+  const [perplexityPrompt, setPerplexityPrompt] = useState("");
   const [formError, setFormError] = useState("");
-  const submit = async (event: FormEvent) => {
-    event.preventDefault();
+  const submit = async (startNow: boolean) => {
     if (!question.trim()) {
-      setFormError("Введите вопрос исследования");
+      setFormError("Вставьте основной исследовательский промпт");
       return;
     }
     setFormError("");
     try {
-      await onCreate(question.trim(), title.trim() || undefined);
+      await onCreate(question, title.trim() || undefined, perplexityPrompt.trim() ? perplexityPrompt : undefined, startNow);
       setTitle("");
       setQuestion("");
+      setPerplexityPrompt("");
     } catch {
       // Fields intentionally remain until a confirmed ACK.
     }
@@ -144,15 +145,21 @@ export function CreateSessionForm({ onCreate, disabled }: {
       <h2>Сформулируйте исследование</h2>
       <p>Сессия появится в истории только после подтверждения Python Host.</p>
     </div>
-    <form onSubmit={submit} noValidate>
+    <form onSubmit={(event) => { event.preventDefault(); void submit(true); }} noValidate>
       <label htmlFor="research-title">Название <span className="optional">необязательно</span></label>
       <input id="research-title" value={title} onChange={(event) => setTitle(event.target.value)} maxLength={200} disabled={disabled} />
-      <label htmlFor="research-question">Исследовательский вопрос</label>
-      <textarea id="research-question" value={question} onChange={(event) => setQuestion(event.target.value)} rows={7} required disabled={disabled} aria-describedby={formError ? "question-error" : undefined} />
+      <label htmlFor="research-question">Основной промпт для восьми R0</label>
+      <textarea id="research-question" value={question} onChange={(event) => setQuestion(event.target.value)} rows={10} required disabled={disabled} aria-describedby={formError ? "question-error" : "main-prompt-help"} />
+      <p id="main-prompt-help" className="field-help">Текст без изменений будет передан в восемь независимых заданий.</p>
       {formError && <p id="question-error" className="field-error" role="alert">{formError}</p>}
-      <button className="primary-button" type="submit" disabled={disabled || !question.trim()}>
-        Создать исследование <ArrowIcon />
-      </button>
+      <label htmlFor="perplexity-prompt">Поисковый промпт Perplexity <span className="optional">необязательно</span></label>
+      <textarea id="perplexity-prompt" value={perplexityPrompt} onChange={(event) => setPerplexityPrompt(event.target.value)} rows={5} disabled={disabled} />
+      <div className="dialog-actions">
+        <button className="secondary-button" type="button" disabled={disabled || !question.trim()} onClick={() => void submit(false)}>Сохранить черновик</button>
+        <button className="primary-button" type="submit" disabled={disabled || !question.trim()}>
+          Создать и начать <ArrowIcon />
+        </button>
+      </div>
     </form>
   </section>;
 }
@@ -211,6 +218,8 @@ export interface TaskTools {
 
 export function TaskList({ tasks, phase, tools }: { tasks: ResearchTask[]; phase: Phase; tools?: TaskTools }) {
   const current = tasks.filter((task) => task.phase === phase);
+  const mandatoryR0 = current.filter((task) => task.kind === "INDEPENDENT_RESPONSE");
+  const receivedR0 = mandatoryR0.filter((task) => task.status === "RECEIVED").length;
   const [prompt, setPrompt] = useState<{ task: ResearchTask; text: string; version: number; sha256: string } | null>(null);
   const [importTask, setImportTask] = useState<ResearchTask | null>(null);
   const [viewing, setViewing] = useState<{ response: ResponseMetadata; text: string } | null>(null);
@@ -248,14 +257,14 @@ export function TaskList({ tasks, phase, tools }: { tasks: ResearchTask[]; phase
   return <section className="task-section">
     <div className="section-heading compact">
       <p className="eyebrow">Задания этапа</p>
-      <h3>{current.length ? `${current.length} задач` : "Задач пока нет"}</h3>
+      <h3>{phase === "INDEPENDENT" ? `Прогресс R0: ${receivedR0}/8` : current.length ? `${current.length} задач` : "Задач пока нет"}</h3>
     </div>
     {current.length > 0 && <ul className="task-list">
       {current.map((task) => {
         const response = tools?.responses.find((item) => item.task_id === task.task_id);
         return <li key={task.task_id} className="task-card">
           <span className="task-index">{task.ordinal + 1}</span>
-          <div className="task-identity"><strong>{providerById(task.provider_id)?.label || task.provider_id || "Локальная операция"}</strong><span>{task.role}</span></div>
+          <div className="task-identity"><strong>{providerById(task.provider_id)?.label || task.provider_id || "Локальная операция"}</strong><span>{task.kind === "SEARCH_EVIDENCE" ? "Отдельный поиск · не входит в R0" : task.role}</span></div>
           <span className={`status-badge status-${task.status.toLowerCase()}`}><span aria-hidden="true">●</span>{statusLabels[task.status]}</span>
           {tools && task.phase === "INDEPENDENT" && <div className="task-actions">
             <button type="button" className="text-button" disabled={loading || tools.busy} onClick={() => void openPrompt(task)}>Задание</button>
@@ -358,11 +367,44 @@ function TaskRecoveryDialog({ task, tasks, tools, onClose }: { task: ResearchTas
   </section></div>;
 }
 
-export function SessionOverview({ session, tasks, syncing, tools }: {
+function DraftIntakeEditor({ session, busy, onSave }: {
+  session: ResearchSession;
+  busy: boolean;
+  onSave: (question: string, title?: string, perplexityPrompt?: string) => Promise<void> | void;
+}) {
+  const [title, setTitle] = useState(session.title ?? "");
+  const [question, setQuestion] = useState(session.question);
+  const [perplexityPrompt, setPerplexityPrompt] = useState(session.perplexity_prompt ?? "");
+  const [error, setError] = useState("");
+  useEffect(() => {
+    setTitle(session.title ?? "");
+    setQuestion(session.question);
+    setPerplexityPrompt(session.perplexity_prompt ?? "");
+  }, [session.intake_version, session.question, session.title, session.perplexity_prompt]);
+  const save = async () => {
+    if (!question.trim()) { setError("Основной промпт не может быть пустым."); return; }
+    setError("");
+    await onSave(question, title.trim() || undefined, perplexityPrompt.trim() ? perplexityPrompt : undefined);
+  };
+  return <section className="question-block" aria-labelledby="draft-intake-heading">
+    <h3 id="draft-intake-heading">Постановка исследования · версия {session.intake_version}</h3>
+    <label htmlFor="draft-title">Название <span className="optional">необязательно</span></label>
+    <input id="draft-title" value={title} onChange={(event) => setTitle(event.target.value)} maxLength={200} disabled={busy} />
+    <label htmlFor="draft-main-prompt">Основной промпт для восьми R0</label>
+    <textarea id="draft-main-prompt" rows={10} value={question} onChange={(event) => setQuestion(event.target.value)} disabled={busy} aria-describedby={error ? "draft-prompt-error" : undefined} />
+    {error && <p id="draft-prompt-error" className="field-error" role="alert">{error}</p>}
+    <label htmlFor="draft-perplexity-prompt">Поисковый промпт Perplexity <span className="optional">необязательно</span></label>
+    <textarea id="draft-perplexity-prompt" rows={5} value={perplexityPrompt} onChange={(event) => setPerplexityPrompt(event.target.value)} disabled={busy} />
+    <button type="button" className="secondary-button" disabled={busy || !question.trim()} onClick={() => void save()}>Сохранить изменения</button>
+  </section>;
+}
+
+export function SessionOverview({ session, tasks, syncing, tools, onUpdateIntake }: {
   session: ResearchSession;
   tasks: ResearchTask[];
   syncing: boolean;
   tools?: TaskTools;
+  onUpdateIntake?: (question: string, title?: string, perplexityPrompt?: string) => Promise<void> | void;
 }) {
   return <article className="panel-card session-overview">
     <div className="session-title-row">
@@ -373,10 +415,13 @@ export function SessionOverview({ session, tasks, syncing, tools }: {
       <span className="status-badge session-status"><span aria-hidden="true">●</span>{statusLabels[session.status]}</span>
     </div>
     {syncing && <p className="sync-label" role="status">Синхронизация…</p>}
-    <section className="question-block" aria-labelledby="question-heading">
-      <h3 id="question-heading">Исходный вопрос</h3>
-      <p>{session.question}</p>
-    </section>
+    {session.phase === "DRAFT" && onUpdateIntake
+      ? <DraftIntakeEditor session={session} busy={tools?.busy ?? false} onSave={onUpdateIntake} />
+      : <section className="question-block" aria-labelledby="question-heading">
+          <h3 id="question-heading">Основной промпт R0</h3>
+          <pre className="text-viewer">{session.question}</pre>
+          {session.perplexity_prompt && <><h3>Поисковый промпт Perplexity</h3><pre className="text-viewer">{session.perplexity_prompt}</pre></>}
+        </section>}
     <PhaseTimeline phase={session.phase} />
     <TaskList tasks={tasks} phase={session.phase} tools={tools} />
     <div className="future-placeholder">
@@ -397,9 +442,12 @@ export function SessionActions({ session, tasks, busy, onStart, onPause, onResum
   onAdvance: (gapReason?: string) => void;
 }) {
   const currentTasks = tasks.filter((task) => task.phase === session.phase);
-  const received = currentTasks.filter((task) => task.status === "RECEIVED").length;
-  const skipped = currentTasks.filter((task) => task.status === "SKIPPED_WITH_REASON").length;
-  const needsGapReason = session.phase === "INDEPENDENT" && received === 3 && skipped === 1;
+  const gateTasks = session.phase === "INDEPENDENT"
+    ? currentTasks.filter((task) => task.kind === "INDEPENDENT_RESPONSE")
+    : currentTasks;
+  const received = gateTasks.filter((task) => task.status === "RECEIVED").length;
+  const skipped = gateTasks.filter((task) => task.status === "SKIPPED_WITH_REASON").length;
+  const needsGapReason = session.phase === "INDEPENDENT" && received === 7 && skipped === 1;
   const [transitionReason, setTransitionReason] = useState("");
   const canAdvance = session.status === "ACTIVE" && !["DRAFT", "DONE"].includes(session.phase);
   return <aside className="panel-card action-panel" aria-label="Действия сессии">
@@ -414,7 +462,7 @@ export function SessionActions({ session, tasks, busy, onStart, onPause, onResum
     {session.phase !== "DRAFT" && session.phase !== "DONE" && <>
       {needsGapReason && <><label htmlFor="transition-gap-reason">Причина перехода с пропуском</label><textarea id="transition-gap-reason" rows={3} value={transitionReason} onChange={(event) => setTransitionReason(event.target.value)} disabled={busy} /></>}
       <button className="secondary-button full-width" type="button" onClick={() => onAdvance(transitionReason)} disabled={busy || !canAdvance || (needsGapReason && !transitionReason.trim())}>Следующий этап <ArrowIcon /></button>
-      <p className="action-help">Получено: {received} из {currentTasks.length}. Итоговое решение о переходе принимает Python Host.</p>
+      <p className="action-help">Получено: {received} из {gateTasks.length}. Итоговое решение о переходе принимает Python Host.</p>
     </>}
   </aside>;
 }

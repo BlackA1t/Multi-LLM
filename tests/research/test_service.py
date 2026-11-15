@@ -1,11 +1,12 @@
 import pytest
 
-from multi_llm.research import Assignment, Phase, ResearchSessionService, SessionStatus, TaskStatus
+from multi_llm.research import Phase, ResearchSessionService, SessionStatus, TaskStatus
+from multi_llm.research.provider_catalog import R0_ASSIGNMENTS
 from multi_llm.research.workflow import ResearchDomainError
 
 
 def assignments():
-    return [Assignment(provider_id=f"provider-{index}", role=f"role-{index}") for index in range(4)]
+    return list(R0_ASSIGNMENTS)
 
 
 def transition_all_tasks(service, session_id, revision, prefix):
@@ -41,12 +42,12 @@ def test_full_fixed_workflow_survives_service_restart(tmp_path):
     assert session.status == SessionStatus.COMPLETED
 
 
-def test_three_response_gap_is_recorded_and_finishes_with_gaps(tmp_path):
+def test_seven_response_gap_is_recorded_and_finishes_with_gaps(tmp_path):
     service = ResearchSessionService(tmp_path / "research.db")
     session = service.create(question="Q", idempotency_key="create")
     service.start(session.session_id, expected_revision=0, idempotency_key="start", assignments=assignments())
     tasks = service.list_tasks(session.session_id)
-    for index, task in enumerate(tasks[:3]):
+    for index, task in enumerate(tasks[:7]):
         service.update_task_status(
             session.session_id, task.task_id, status=TaskStatus.AWAITING_USER,
             expected_revision=service.get(session.session_id).revision, idempotency_key=f"a-{index}",
@@ -55,7 +56,7 @@ def test_three_response_gap_is_recorded_and_finishes_with_gaps(tmp_path):
             session.session_id, task.task_id, status=TaskStatus.RECEIVED,
             expected_revision=service.get(session.session_id).revision, idempotency_key=f"r-{index}",
         )
-    missing = tasks[3]
+    missing = tasks[7]
     service.update_task_status(
         session.session_id, missing.task_id, status=TaskStatus.UNAVAILABLE,
         expected_revision=service.get(session.session_id).revision, idempotency_key="unavailable",
@@ -79,10 +80,10 @@ def test_three_response_gap_is_recorded_and_finishes_with_gaps(tmp_path):
     assert advanced.gap_reason == "provider unavailable"
 
 
-def test_pause_resume_and_invalid_assignment_count(tmp_path):
+def test_pause_resume_and_server_rejects_non_fixed_assignments(tmp_path):
     service = ResearchSessionService(tmp_path / "research.db")
     session = service.create(question="Q", idempotency_key="create")
-    with pytest.raises(ResearchDomainError, match="Exactly four"):
+    with pytest.raises(ResearchDomainError, match="fixed by the server"):
         service.start(
             session.session_id, expected_revision=0, idempotency_key="bad", assignments=assignments()[:3]
         )

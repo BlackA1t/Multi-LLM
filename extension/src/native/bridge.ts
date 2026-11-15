@@ -12,6 +12,7 @@ const HOST_NAME = "com.blackalt.multi_llm";
 const REQUIRED_OPERATIONS = [
   "system.hello",
   "session.create",
+  "session.update_intake",
   "session.get",
   "session.list",
   "session.start",

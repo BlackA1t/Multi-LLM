@@ -14,13 +14,8 @@ from uuid import uuid4
 
 
 LENGTH = struct.Struct("=I")
-ASSIGNMENTS = [
-    {"provider_id": "gemini", "role": "independent_gemini"},
-    {"provider_id": "deepseek", "role": "independent_deepseek"},
-    {"provider_id": "qwen", "role": "independent_qwen"},
-    {"provider_id": "grok", "role": "independent_grok"},
-]
-P104_OPERATIONS = {
+REQUIRED_OPERATIONS = {
+    "session.update_intake",
     "task.prompt.meta", "task.prompt.chunk", "task.prompt.copy", "task.mark_awaiting",
     "response.upload.begin", "response.upload.part", "response.upload.commit",
     "response.upload.abort", "response.list", "response.chunk", "task.mark_unavailable",
@@ -80,11 +75,12 @@ def main() -> int:
             hello = success(request(process, "system.hello", {}))
             if hello.get("protocol_version") != 1:
                 raise RuntimeError("Native Host protocol version is not 1")
-            if not P104_OPERATIONS.issubset(set(hello.get("operations", []))):
-                raise RuntimeError("Native Host does not advertise all P1.0.4 operations")
+            if not REQUIRED_OPERATIONS.issubset(set(hello.get("operations", []))):
+                raise RuntimeError("Native Host does not advertise all required operations")
 
             created = success(request(process, "session.create", {
                 "question": "Синтетическая проверка устойчивости локальной сессии",
+                "perplexity_prompt": "Синтетический поисковый промпт",
                 "title": "P104 synthetic probe",
                 "idempotency_key": str(uuid4()),
             }))
@@ -100,11 +96,12 @@ def main() -> int:
                 "session_id": session_id,
                 "expected_revision": 0,
                 "idempotency_key": str(uuid4()),
-                "assignments": ASSIGNMENTS,
             }))
             tasks = success(request(process, "task.list", {"session_id": session_id}))
-            if len(tasks.get("items", [])) != 4:
-                raise RuntimeError("session.start did not create four tasks")
+            mandatory_tasks = [item for item in tasks.get("items", []) if item.get("kind") == "INDEPENDENT_RESPONSE"]
+            search_tasks = [item for item in tasks.get("items", []) if item.get("kind") == "SEARCH_EVIDENCE"]
+            if len(mandatory_tasks) != 8 or len(search_tasks) != 1:
+                raise RuntimeError("session.start did not create eight R0 tasks and one search task")
             paused = success(request(process, "session.pause", {
                 "session_id": session_id,
                 "expected_revision": started["revision"],
@@ -139,7 +136,7 @@ def main() -> int:
                 raise RuntimeError("Prompt chunk failed integrity validation")
 
             last_receipt = None
-            for index, task in enumerate(tasks["items"]):
+            for index, task in enumerate(mandatory_tasks):
                 current = success(request(process, "session.get", {"session_id": session_id}))
                 text = f"Синтетический ручной ответ {index} 🚀\r\n" * 100
                 payload = text.encode("utf-8")
@@ -169,7 +166,7 @@ def main() -> int:
                 last_receipt = receipt
 
             responses = success(request(process, "response.list", {"session_id": session_id}))
-            if len(responses.get("items", [])) != 4 or last_receipt is None:
+            if len(responses.get("items", [])) != 8 or last_receipt is None:
                 raise RuntimeError("Confirmed responses are missing from response.list")
             response_part = success(request(process, "response.chunk", {
                 "session_id": session_id, "result_id": last_receipt["response"]["result_id"],
@@ -183,7 +180,7 @@ def main() -> int:
                 "idempotency_key": str(uuid4()),
             }))
             if advanced.get("phase") != "COMPARISON":
-                raise RuntimeError("Four confirmed responses did not pass the server gate")
+                raise RuntimeError("Eight confirmed responses did not pass the server gate")
 
             assert process.stdin is not None
             process.stdin.close()
@@ -201,10 +198,10 @@ def main() -> int:
     print(json.dumps({
         "status": "PASS",
         "protocol_version": 1,
-        "operations_checked": 22,
-        "tasks_created": 4,
+        "operations_checked": 23,
+        "tasks_created": 9,
         "initial_advance_gate": "INVALID_PHASE",
-        "confirmed_responses": 4,
+        "confirmed_responses": 8,
         "final_phase": "COMPARISON",
         "durable_receipt_retry": "PASS",
         "stdout_framing": "clean",

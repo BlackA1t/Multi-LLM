@@ -3,7 +3,7 @@ import { isUiMessage, type BridgeReply, type UiMessage } from "./native/contract
 
 const bridge = new NativeBridge();
 const MUTATIONS = new Set([
-  "session.create", "session.start", "session.pause", "session.resume", "session.advance",
+  "session.create", "session.update_intake", "session.start", "session.pause", "session.resume", "session.advance",
   "task.mark_awaiting", "response.upload.commit", "task.mark_unavailable", "task.skip", "task.reassign",
 ]);
 

@@ -128,27 +128,42 @@ export function useResearch() {
     };
   }, [refreshSession]);
 
-  const createSession = useCallback(async (question: string, title?: string) => {
+  const createSession = useCallback(async (
+    question: string,
+    title?: string,
+    perplexityPrompt?: string,
+    startNow = true,
+  ) => {
     setBusy(true);
     setError(null);
+    let startCommand: MutationCommand | null = null;
     try {
-      const fingerprint = JSON.stringify([question, title ?? null]);
+      const fingerprint = JSON.stringify([question, title ?? null, perplexityPrompt ?? null, startNow]);
       if (pendingCreate.current?.fingerprint !== fingerprint) {
         pendingCreate.current = { fingerprint, key: crypto.randomUUID() };
       }
-      const created = await controller.create(question, title, pendingCreate.current.key);
+      const created = await controller.create(question, title, perplexityPrompt, pendingCreate.current.key);
       pendingCreate.current = null;
       await loadHistory(0);
       await selectSession(created.session_id);
+      if (startNow) {
+        startCommand = controller.startCommand(created);
+        await controller.mutate(startCommand);
+        await refreshSession(created.session_id);
+        await loadHistory(0);
+      }
     } catch (caught) {
       const described = describeError(caught);
       setError(described);
+      if (startCommand && ["HOST_UNAVAILABLE", "DISCONNECTED"].includes(described.code)) {
+        setRetryCommand(startCommand);
+      }
       if (!["HOST_UNAVAILABLE", "DISCONNECTED"].includes(described.code)) pendingCreate.current = null;
       throw caught;
     } finally {
       setBusy(false);
     }
-  }, [controller, describeError, loadHistory, selectSession]);
+  }, [controller, describeError, loadHistory, refreshSession, selectSession]);
 
   const runMutation = useCallback(async (command: MutationCommand) => {
     setBusy(true);
@@ -243,6 +258,9 @@ export function useResearch() {
     refreshSession,
     selectSession,
     createSession,
+    updateIntake: session ? (
+      question: string, title?: string, perplexityPrompt?: string,
+    ) => runMutation(controller.updateIntakeCommand(session, question, title, perplexityPrompt)) : null,
     runMutation,
     retryMutation: retryCommand ? () => runMutation(retryCommand) : null,
     start: session ? () => runMutation(controller.startCommand(session)) : null,

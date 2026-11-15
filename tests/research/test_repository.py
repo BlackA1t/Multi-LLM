@@ -3,12 +3,13 @@ import sqlite3
 
 import pytest
 
-from multi_llm.research import Assignment, ResearchRepository, ResearchSessionService, TaskStatus
+from multi_llm.research import ResearchRepository, ResearchSessionService, TaskStatus
+from multi_llm.research.provider_catalog import R0_ASSIGNMENTS
 from multi_llm.research.workflow import ResearchDomainError, StaleRevisionError
 
 
 def assignments():
-    return [Assignment(provider_id=f"provider-{index}", role=f"role-{index}") for index in range(4)]
+    return list(R0_ASSIGNMENTS)
 
 
 def test_database_is_separate_migrated_persistent_and_has_safety_pragmas(tmp_path):
@@ -23,7 +24,7 @@ def test_database_is_separate_migrated_persistent_and_has_safety_pragmas(tmp_pat
 
     with sqlite3.connect(path) as connection:
         assert connection.execute("PRAGMA journal_mode").fetchone()[0].lower() == "wal"
-        assert connection.execute("SELECT COUNT(*) FROM schema_migrations").fetchone()[0] == 2
+        assert connection.execute("SELECT COUNT(*) FROM schema_migrations").fetchone()[0] == 3
         columns = {row[1] for row in connection.execute("PRAGMA table_info(session_events)")}
         assert "question" not in columns and "message" not in columns and "payload" not in columns
 
@@ -34,7 +35,7 @@ def test_concurrent_repository_initialization_is_migration_safe(tmp_path):
         repositories = list(pool.map(lambda _index: ResearchRepository(path), range(4)))
     assert len(repositories) == 4
     with sqlite3.connect(path) as connection:
-        assert connection.execute("SELECT COUNT(*) FROM schema_migrations").fetchone()[0] == 2
+        assert connection.execute("SELECT COUNT(*) FROM schema_migrations").fetchone()[0] == 3
 
 
 def test_failed_idempotent_create_rolls_back_without_duplicate(tmp_path):
@@ -54,7 +55,7 @@ def test_start_failure_rolls_back_every_partial_row(tmp_path, monkeypatch):
     def fail_prompt(*_args, **_kwargs):
         raise RuntimeError("synthetic prompt failure")
 
-    monkeypatch.setattr("multi_llm.research.repository.PromptComposer.independent", fail_prompt)
+    monkeypatch.setattr("multi_llm.research.repository.PromptComposer.verbatim", fail_prompt)
     with pytest.raises(RuntimeError, match="synthetic"):
         service.start(
             created.session_id, expected_revision=0, idempotency_key="start", assignments=assignments()
@@ -77,7 +78,7 @@ def test_optimistic_revision_and_idempotency_are_atomic(tmp_path):
         created.session_id, expected_revision=0, idempotency_key="start", assignments=assignments()
     )
     assert repeated.revision == started.revision == 1
-    assert len(service.list_tasks(created.session_id)) == 4
+    assert len(service.list_tasks(created.session_id)) == 8
 
     def pause(key):
         try:

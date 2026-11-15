@@ -8,6 +8,14 @@ from .models import Phase, PromptArtifact
 
 class PromptComposer:
     @staticmethod
+    def verbatim(task_id: UUID, content: str, *, version: int = 1) -> PromptArtifact:
+        encoded = content.encode("utf-8")
+        return PromptArtifact(
+            prompt_id=uuid4(), task_id=task_id, version=version, content=content,
+            size_bytes=len(encoded), sha256=hashlib.sha256(encoded).hexdigest(),
+        )
+
+    @staticmethod
     def independent(
         task_id: UUID,
         question: str,

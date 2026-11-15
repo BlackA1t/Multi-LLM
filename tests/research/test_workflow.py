@@ -31,13 +31,13 @@ def test_session_and_task_status_transitions_reject_invalid_moves():
         require_task_transition(TaskStatus.PROMPT_READY, TaskStatus.UNAVAILABLE)
 
 
-def test_independent_gate_requires_four_or_explicit_three_response_gap():
-    assert not RoundManager.validate_gate(Phase.INDEPENDENT, [TaskStatus.RECEIVED] * 4, None)
+def test_independent_gate_requires_eight_or_explicit_seven_response_gap():
+    assert not RoundManager.validate_gate(Phase.INDEPENDENT, [TaskStatus.RECEIVED] * 8, None)
     assert RoundManager.validate_gate(
         Phase.INDEPENDENT,
-        [TaskStatus.RECEIVED] * 3 + [TaskStatus.SKIPPED_WITH_REASON],
-        "fourth provider unavailable",
-        [None, None, None, "provider unavailable"],
+        [TaskStatus.RECEIVED] * 7 + [TaskStatus.SKIPPED_WITH_REASON],
+        "eighth provider unavailable",
+        [None] * 7 + ["provider unavailable"],
     )
     with pytest.raises(ResearchDomainError):
         RoundManager.validate_gate(Phase.INDEPENDENT, [TaskStatus.RECEIVED] * 3, None)

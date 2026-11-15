@@ -63,14 +63,14 @@ export function ResearchApp({ mode }: { mode: "sidepanel" | "workspace" }) {
     {mode === "sidepanel" ? <main className="sidepanel-content">
       {showNew && <CreateSessionForm onCreate={research.createSession} disabled={research.busy || research.connection !== "CONNECTED"} />}
       {showHistory && <SessionHistory sessions={research.sessions} activeId={research.session?.session_id} onSelect={(id) => void research.selectSession(id)} nextCursor={research.nextCursor} onMore={() => research.nextCursor !== null && void research.loadHistory(research.nextCursor)} loading={research.busy} />}
-      {showSession && <><SessionOverview session={research.session!} tasks={research.tasks} syncing={research.syncing} tools={taskTools} />{actions}</>}
+      {showSession && <><SessionOverview session={research.session!} tasks={research.tasks} syncing={research.syncing} tools={taskTools} onUpdateIntake={research.updateIntake ?? undefined} />{actions}</>}
     </main> : <main className="workspace-grid">
       <aside className="workspace-sidebar">
         <CreateSessionForm onCreate={research.createSession} disabled={research.busy || research.connection !== "CONNECTED"} />
         <SessionHistory sessions={research.sessions} activeId={research.session?.session_id} onSelect={(id) => void research.selectSession(id)} nextCursor={research.nextCursor} onMore={() => research.nextCursor !== null && void research.loadHistory(research.nextCursor)} loading={research.busy} />
       </aside>
       <section className="workspace-main">
-        {research.session ? <SessionOverview session={research.session} tasks={research.tasks} syncing={research.syncing} tools={taskTools} /> : <div className="panel-card empty-state large"><WorkspaceIconFallback /><h2>Выберите или создайте сессию</h2><p>Данные загружаются напрямую из локального Python Host.</p></div>}
+        {research.session ? <SessionOverview session={research.session} tasks={research.tasks} syncing={research.syncing} tools={taskTools} onUpdateIntake={research.updateIntake ?? undefined} /> : <div className="panel-card empty-state large"><WorkspaceIconFallback /><h2>Выберите или создайте сессию</h2><p>Данные загружаются напрямую из локального Python Host.</p></div>}
       </section>
       <section className="workspace-actions">{actions}</section>
     </main>}

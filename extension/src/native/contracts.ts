@@ -78,6 +78,8 @@ export interface ResearchSession {
   session_id: string;
   question: string;
   title: string | null;
+  perplexity_prompt: string | null;
+  intake_version: number;
   phase: Phase;
   status: SessionStatus;
   revision: number;
@@ -228,6 +230,8 @@ export function isResearchSession(value: unknown): value is ResearchSession {
   return typeof value.session_id === "string"
     && typeof value.question === "string"
     && (typeof value.title === "string" || value.title === null)
+    && (typeof value.perplexity_prompt === "string" || value.perplexity_prompt === null)
+    && Number.isInteger(value.intake_version)
     && phases.has(value.phase as Phase)
     && sessionStatuses.has(value.status as SessionStatus)
     && Number.isInteger(value.revision)

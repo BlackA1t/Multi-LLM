@@ -115,7 +115,7 @@ class RoundManager:
     ) -> bool:
         if phase == Phase.INDEPENDENT:
             received = statuses.count(TaskStatus.RECEIVED)
-            if len(statuses) == 4 and received == 4:
+            if len(statuses) == 8 and received == 8:
                 return False
             skipped = statuses.count(TaskStatus.SKIPPED_WITH_REASON)
             stored_reason = bool(
@@ -127,11 +127,11 @@ class RoundManager:
                     if status == TaskStatus.SKIPPED_WITH_REASON
                 )
             )
-            if received == 3 and skipped == 1 and stored_reason and gap_reason and gap_reason.strip():
+            if len(statuses) == 8 and received == 7 and skipped == 1 and stored_reason and gap_reason and gap_reason.strip():
                 return True
             raise ResearchDomainError(
                 "INVALID_PHASE",
-                "Independent phase requires four responses, or three with an explicit gap reason",
+                "Independent R0 requires eight responses, or seven with an explicit gap reason",
             )
         incomplete = [status for status in statuses if status != TaskStatus.RECEIVED]
         if not incomplete:

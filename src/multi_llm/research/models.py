@@ -48,6 +48,7 @@ class TaskStatus(StrEnum):
 
 class TaskKind(StrEnum):
     INDEPENDENT_RESPONSE = "INDEPENDENT_RESPONSE"
+    SEARCH_EVIDENCE = "SEARCH_EVIDENCE"
     STRUCTURAL_COMPARISON = "STRUCTURAL_COMPARISON"
     CRITIQUE = "CRITIQUE"
     FACT_CHECK = "FACT_CHECK"
@@ -68,6 +69,8 @@ class ResearchSession(BaseModel):
     session_id: UUID
     question: str = Field(min_length=1, max_length=2 * 1024 * 1024)
     title: str | None = Field(default=None, max_length=200)
+    perplexity_prompt: str | None = Field(default=None, max_length=2 * 1024 * 1024)
+    intake_version: int = Field(default=1, ge=1)
     phase: Phase = Phase.DRAFT
     status: SessionStatus = SessionStatus.ACTIVE
     revision: int = Field(default=0, ge=0)
