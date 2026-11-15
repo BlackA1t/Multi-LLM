@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
-import type { ConnectionState, ResearchSession, ResearchTask, SessionSummary } from "../../native/contracts";
+import type { ConnectionState, ResearchSession, ResearchTask, ResponseMetadata, SessionSummary } from "../../native/contracts";
 import {
   type MutationCommand,
   SessionController,
@@ -23,6 +23,7 @@ export function useResearch() {
   const [nextCursor, setNextCursor] = useState<number | null>(null);
   const [session, setSession] = useState<ResearchSession | null>(null);
   const [tasks, setTasks] = useState<ResearchTask[]>([]);
+  const [responses, setResponses] = useState<ResponseMetadata[]>([]);
   const [busy, setBusy] = useState(false);
   const [syncing, setSyncing] = useState(false);
   const [error, setError] = useState<UiError | null>(null);
@@ -30,6 +31,7 @@ export function useResearch() {
   const selectedId = useRef<string | null>(null);
   const refreshTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pendingCreate = useRef<{ fingerprint: string; key: string } | null>(null);
+  const pendingImport = useRef<{ fingerprint: string; key: string } | null>(null);
 
   const describeError = useCallback((caught: unknown): UiError => {
     if (caught instanceof UiBridgeError) {
@@ -53,13 +55,15 @@ export function useResearch() {
     if (!sessionId) return null;
     setSyncing(true);
     try {
-      const [freshSession, freshTasks] = await Promise.all([
+      const [freshSession, freshTasks, freshResponses] = await Promise.all([
         controller.get(sessionId),
         controller.tasks(sessionId),
+        controller.responses(sessionId),
       ]);
       selectedId.current = sessionId;
       setSession(freshSession);
       setTasks(freshTasks);
+      setResponses(freshResponses);
       setConnection("CONNECTED");
       if (!preserveError) setError(null);
       return freshSession;
@@ -176,9 +180,50 @@ export function useResearch() {
     selectedId.current = null;
     setSession(null);
     setTasks([]);
+    setResponses([]);
     setView("new");
     await chrome.storage.local.remove("activeSessionId");
   }, []);
+
+  const taskAction = useCallback(async <T,>(action: () => Promise<T>): Promise<T> => {
+    setBusy(true);
+    setError(null);
+    try {
+      const result = await action();
+      await refreshSession();
+      return result;
+    } catch (caught) {
+      setError(describeError(caught));
+      throw caught;
+    } finally {
+      setBusy(false);
+    }
+  }, [describeError, refreshSession]);
+
+  const importResponse = useCallback(async (
+    task: ResearchTask,
+    text: string,
+    mode: "create" | "revise",
+    expectedResultVersion?: number,
+    reportedModel?: string,
+  ) => {
+    if (!session) throw new Error("No active session");
+    const fingerprint = JSON.stringify([session.session_id, task.task_id, text, mode, expectedResultVersion, reportedModel]);
+    if (pendingImport.current?.fingerprint !== fingerprint) {
+      pendingImport.current = { fingerprint, key: crypto.randomUUID() };
+    }
+    try {
+      const receipt = await taskAction(() => controller.importResponse(
+        session, task, text, mode, pendingImport.current!.key, expectedResultVersion, reportedModel,
+      ));
+      pendingImport.current = null;
+      return receipt;
+    } catch (caught) {
+      const code = caught instanceof UiBridgeError ? caught.detail.code : "INTERNAL_ERROR";
+      if (!["HOST_UNAVAILABLE", "DISCONNECTED"].includes(code)) pendingImport.current = null;
+      throw caught;
+    }
+  }, [controller, session, taskAction]);
 
   return {
     connection,
@@ -188,6 +233,7 @@ export function useResearch() {
     nextCursor,
     session,
     tasks,
+    responses,
     busy,
     syncing,
     error,
@@ -202,7 +248,15 @@ export function useResearch() {
     start: session ? () => runMutation(controller.startCommand(session)) : null,
     pause: session ? () => runMutation(controller.pauseCommand(session)) : null,
     resume: session ? () => runMutation(controller.resumeCommand(session)) : null,
-    advance: session ? () => runMutation(controller.advanceCommand(session)) : null,
+    advance: session ? (gapReason?: string) => runMutation(controller.advanceCommand(session, crypto.randomUUID(), gapReason)) : null,
+    loadPrompt: (taskId: string) => session ? controller.prompt(session.session_id, taskId) : Promise.reject(new Error("No session")),
+    copyPrompt: (taskId: string) => session ? taskAction(() => controller.copyPrompt(session.session_id, taskId)) : Promise.reject(new Error("No session")),
+    markAwaiting: (taskId: string) => session ? taskAction(() => controller.markAwaiting(session, taskId)) : Promise.reject(new Error("No session")),
+    importResponse,
+    loadResponse: (response: ResponseMetadata) => session ? controller.responseText(session.session_id, response) : Promise.reject(new Error("No session")),
+    markUnavailable: (taskId: string, reason: string) => session ? taskAction(() => controller.markUnavailable(session, taskId, reason)) : Promise.reject(new Error("No session")),
+    skipTask: (taskId: string, reason: string) => session ? taskAction(() => controller.skip(session, taskId, reason)) : Promise.reject(new Error("No session")),
+    reassignTask: (taskId: string, providerId: string) => session ? taskAction(() => controller.reassign(session, taskId, providerId)) : Promise.reject(new Error("No session")),
     clearActive,
   };
 }

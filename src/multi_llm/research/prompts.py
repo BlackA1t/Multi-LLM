@@ -8,17 +8,26 @@ from .models import Phase, PromptArtifact
 
 class PromptComposer:
     @staticmethod
-    def independent(task_id: UUID, question: str, role: str) -> PromptArtifact:
+    def independent(
+        task_id: UUID,
+        question: str,
+        role: str,
+        *,
+        provider_id: str | None = None,
+        version: int = 1,
+    ) -> PromptArtifact:
+        provider_line = f"Assigned provider: {provider_id}\n\n" if provider_id else ""
         content = (
             "Answer the research question independently. Do not assume access to other participants' answers.\n\n"
             f"Assigned role: {role}\n\n"
+            f"{provider_line}"
             f"<research_question>\n{question}\n</research_question>"
         )
         encoded = content.encode("utf-8")
         return PromptArtifact(
             prompt_id=uuid4(),
             task_id=task_id,
-            version=1,
+            version=version,
             content=content,
             size_bytes=len(encoded),
             sha256=hashlib.sha256(encoded).hexdigest(),

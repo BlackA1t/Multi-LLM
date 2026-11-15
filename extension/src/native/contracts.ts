@@ -120,6 +120,49 @@ export interface TaskListResult {
   items: ResearchTask[];
 }
 
+export interface PromptMetadata {
+  prompt_id: string;
+  task_id: string;
+  version: number;
+  size_bytes: number;
+  sha256: string;
+}
+
+export interface ChunkResult {
+  chunk_b64: string;
+  offset: number;
+  size_bytes: number;
+  total_bytes: number;
+  done: boolean;
+}
+
+export interface UploadReservation {
+  upload_id: string;
+  task_id: string;
+  mode: "create" | "revise";
+  size_bytes: number;
+  sha256: string;
+  next_index: number;
+  expires_at: string;
+}
+
+export interface ResponseMetadata {
+  result_id: string;
+  task_id: string;
+  version: number;
+  source_type: string;
+  reported_model: string | null;
+  size_bytes: number;
+  sha256: string;
+  created_at: string;
+}
+
+export interface ResponseReceipt {
+  response: ResponseMetadata;
+  task: ResearchTask;
+  session_revision: number;
+}
+
 export interface BridgeStatusMessage {
   kind: "bridge.status";
 }
@@ -229,4 +272,36 @@ function isResearchTask(value: unknown): value is ResearchTask {
 
 export function isTaskListResult(value: unknown): value is TaskListResult {
   return isRecord(value) && Array.isArray(value.items) && value.items.every(isResearchTask);
+}
+
+export function isPromptMetadata(value: unknown): value is PromptMetadata {
+  return isRecord(value) && typeof value.prompt_id === "string" && typeof value.task_id === "string"
+    && Number.isInteger(value.version) && Number.isInteger(value.size_bytes) && typeof value.sha256 === "string";
+}
+
+export function isChunkResult(value: unknown): value is ChunkResult {
+  return isRecord(value) && typeof value.chunk_b64 === "string" && Number.isInteger(value.offset)
+    && Number.isInteger(value.size_bytes) && Number.isInteger(value.total_bytes) && typeof value.done === "boolean";
+}
+
+export function isUploadReservation(value: unknown): value is UploadReservation {
+  return isRecord(value) && typeof value.upload_id === "string" && typeof value.task_id === "string"
+    && (value.mode === "create" || value.mode === "revise") && Number.isInteger(value.size_bytes)
+    && typeof value.sha256 === "string" && Number.isInteger(value.next_index) && typeof value.expires_at === "string";
+}
+
+function isResponseMetadata(value: unknown): value is ResponseMetadata {
+  return isRecord(value) && typeof value.result_id === "string" && typeof value.task_id === "string"
+    && Number.isInteger(value.version) && typeof value.source_type === "string"
+    && (typeof value.reported_model === "string" || value.reported_model === null)
+    && Number.isInteger(value.size_bytes) && typeof value.sha256 === "string" && typeof value.created_at === "string";
+}
+
+export function isResponseList(value: unknown): value is { items: ResponseMetadata[] } {
+  return isRecord(value) && Array.isArray(value.items) && value.items.every(isResponseMetadata);
+}
+
+export function isResponseReceipt(value: unknown): value is ResponseReceipt {
+  return isRecord(value) && isResponseMetadata(value.response) && isResearchTask(value.task)
+    && Number.isInteger(value.session_revision);
 }

@@ -121,6 +121,47 @@ MIGRATIONS: tuple[tuple[int, str], ...] = (
         CREATE INDEX IF NOT EXISTS ix_tasks_session_phase ON research_tasks(session_id, phase, ordinal);
         CREATE INDEX IF NOT EXISTS ix_events_session ON session_events(session_id, created_at);
     """),
+    (2, """
+        CREATE UNIQUE INDEX IF NOT EXISTS ux_research_results_task
+            ON research_results(task_id);
+        CREATE TABLE IF NOT EXISTS response_uploads (
+            upload_id TEXT PRIMARY KEY,
+            session_id TEXT NOT NULL REFERENCES research_sessions(session_id) ON DELETE RESTRICT,
+            task_id TEXT NOT NULL REFERENCES research_tasks(task_id) ON DELETE RESTRICT,
+            mode TEXT NOT NULL CHECK(mode IN ('create', 'revise')),
+            size_bytes INTEGER NOT NULL,
+            sha256 TEXT NOT NULL,
+            expected_revision INTEGER NOT NULL,
+            expected_result_version INTEGER,
+            idempotency_key TEXT NOT NULL,
+            request_hash TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            expires_at TEXT NOT NULL,
+            UNIQUE(mode, idempotency_key)
+        );
+        CREATE TABLE IF NOT EXISTS response_upload_parts (
+            upload_id TEXT NOT NULL REFERENCES response_uploads(upload_id) ON DELETE CASCADE,
+            part_index INTEGER NOT NULL,
+            chunk_blob BLOB NOT NULL,
+            size_bytes INTEGER NOT NULL,
+            sha256 TEXT NOT NULL,
+            PRIMARY KEY(upload_id, part_index)
+        );
+        CREATE TABLE IF NOT EXISTS operation_receipts (
+            operation TEXT NOT NULL,
+            idempotency_key TEXT NOT NULL,
+            session_id TEXT NOT NULL REFERENCES research_sessions(session_id) ON DELETE RESTRICT,
+            task_id TEXT NOT NULL REFERENCES research_tasks(task_id) ON DELETE RESTRICT,
+            request_hash TEXT NOT NULL,
+            receipt_json TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            PRIMARY KEY(operation, idempotency_key)
+        );
+        CREATE INDEX IF NOT EXISTS ix_response_uploads_expiry
+            ON response_uploads(expires_at);
+        CREATE INDEX IF NOT EXISTS ix_response_revisions_result
+            ON response_revisions(result_id, version);
+    """),
 )
 
 

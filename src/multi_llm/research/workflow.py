@@ -107,12 +107,27 @@ class RoundManager:
         return templates.get(phase, [])
 
     @staticmethod
-    def validate_gate(phase: Phase, statuses: list[TaskStatus], gap_reason: str | None) -> bool:
+    def validate_gate(
+        phase: Phase,
+        statuses: list[TaskStatus],
+        gap_reason: str | None,
+        task_gap_reasons: list[str | None] | None = None,
+    ) -> bool:
         if phase == Phase.INDEPENDENT:
             received = statuses.count(TaskStatus.RECEIVED)
-            if received >= 4:
+            if len(statuses) == 4 and received == 4:
                 return False
-            if received == 3 and gap_reason and gap_reason.strip():
+            skipped = statuses.count(TaskStatus.SKIPPED_WITH_REASON)
+            stored_reason = bool(
+                task_gap_reasons
+                and len(task_gap_reasons) == len(statuses)
+                and all(
+                    reason and reason.strip()
+                    for status, reason in zip(statuses, task_gap_reasons, strict=True)
+                    if status == TaskStatus.SKIPPED_WITH_REASON
+                )
+            )
+            if received == 3 and skipped == 1 and stored_reason and gap_reason and gap_reason.strip():
                 return True
             raise ResearchDomainError(
                 "INVALID_PHASE",

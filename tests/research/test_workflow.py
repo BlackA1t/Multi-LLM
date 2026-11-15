@@ -37,6 +37,7 @@ def test_independent_gate_requires_four_or_explicit_three_response_gap():
         Phase.INDEPENDENT,
         [TaskStatus.RECEIVED] * 3 + [TaskStatus.SKIPPED_WITH_REASON],
         "fourth provider unavailable",
+        [None, None, None, "provider unavailable"],
     )
     with pytest.raises(ResearchDomainError):
         RoundManager.validate_gate(Phase.INDEPENDENT, [TaskStatus.RECEIVED] * 3, None)

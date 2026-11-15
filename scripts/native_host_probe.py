@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import argparse
+import base64
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -18,6 +20,12 @@ ASSIGNMENTS = [
     {"provider_id": "qwen", "role": "independent_qwen"},
     {"provider_id": "grok", "role": "independent_grok"},
 ]
+P104_OPERATIONS = {
+    "task.prompt.meta", "task.prompt.chunk", "task.prompt.copy", "task.mark_awaiting",
+    "response.upload.begin", "response.upload.part", "response.upload.commit",
+    "response.upload.abort", "response.list", "response.chunk", "task.mark_unavailable",
+    "task.skip", "task.reassign",
+}
 
 
 def frame(message: dict[str, Any]) -> bytes:
@@ -57,7 +65,7 @@ def main() -> int:
     if not host.is_file() or host.suffix.lower() != ".exe":
         raise SystemExit("Host launcher must be an existing .exe")
 
-    with tempfile.TemporaryDirectory(prefix="multi-llm-p103-") as directory:
+    with tempfile.TemporaryDirectory(prefix="multi-llm-p104-") as directory:
         database = Path(directory) / "research.db"
         environment = os.environ.copy()
         environment["MULTI_LLM_RESEARCH_DB"] = str(database.resolve())
@@ -72,10 +80,12 @@ def main() -> int:
             hello = success(request(process, "system.hello", {}))
             if hello.get("protocol_version") != 1:
                 raise RuntimeError("Native Host protocol version is not 1")
+            if not P104_OPERATIONS.issubset(set(hello.get("operations", []))):
+                raise RuntimeError("Native Host does not advertise all P1.0.4 operations")
 
             created = success(request(process, "session.create", {
                 "question": "Синтетическая проверка устойчивости локальной сессии",
-                "title": "P103 synthetic probe",
+                "title": "P104 synthetic probe",
                 "idempotency_key": str(uuid4()),
             }))
             session_id = created["session_id"]
@@ -116,6 +126,65 @@ def main() -> int:
             if unchanged.get("phase") != "INDEPENDENT" or unchanged.get("revision") != resumed["revision"]:
                 raise RuntimeError("Rejected advance changed the session")
 
+            first_task = tasks["items"][0]
+            prompt_meta = success(request(process, "task.prompt.meta", {
+                "session_id": session_id, "task_id": first_task["task_id"],
+            }))
+            prompt_part = success(request(process, "task.prompt.chunk", {
+                "session_id": session_id, "task_id": first_task["task_id"],
+                "offset": 0, "limit": 32768,
+            }))
+            prompt_bytes = base64.b64decode(prompt_part["chunk_b64"], validate=True)
+            if len(prompt_bytes) != prompt_meta["size_bytes"] or hashlib.sha256(prompt_bytes).hexdigest() != prompt_meta["sha256"]:
+                raise RuntimeError("Prompt chunk failed integrity validation")
+
+            last_receipt = None
+            for index, task in enumerate(tasks["items"]):
+                current = success(request(process, "session.get", {"session_id": session_id}))
+                text = f"Синтетический ручной ответ {index} 🚀\r\n" * 100
+                payload = text.encode("utf-8")
+                digest = hashlib.sha256(payload).hexdigest()
+                key = str(uuid4())
+                upload = success(request(process, "response.upload.begin", {
+                    "session_id": session_id, "task_id": task["task_id"], "mode": "create",
+                    "size_bytes": len(payload), "sha256": digest,
+                    "expected_revision": current["revision"], "idempotency_key": key,
+                }))
+                for part_index, offset in enumerate(range(0, len(payload), 32768)):
+                    chunk = payload[offset:offset + 32768]
+                    success(request(process, "response.upload.part", {
+                        "upload_id": upload["upload_id"], "part_index": part_index,
+                        "chunk_b64": base64.b64encode(chunk).decode("ascii"),
+                        "sha256": hashlib.sha256(chunk).hexdigest(),
+                    }))
+                commit_args = {
+                    "upload_id": upload["upload_id"], "session_id": session_id,
+                    "task_id": task["task_id"], "source_type": "web_manual",
+                    "expected_revision": current["revision"], "idempotency_key": key,
+                }
+                receipt = success(request(process, "response.upload.commit", commit_args))
+                repeated = success(request(process, "response.upload.commit", commit_args))
+                if repeated != receipt:
+                    raise RuntimeError("Lost-ACK commit retry did not return the durable receipt")
+                last_receipt = receipt
+
+            responses = success(request(process, "response.list", {"session_id": session_id}))
+            if len(responses.get("items", [])) != 4 or last_receipt is None:
+                raise RuntimeError("Confirmed responses are missing from response.list")
+            response_part = success(request(process, "response.chunk", {
+                "session_id": session_id, "result_id": last_receipt["response"]["result_id"],
+                "version": 1, "offset": 0, "limit": 32768,
+            }))
+            if not base64.b64decode(response_part["chunk_b64"], validate=True):
+                raise RuntimeError("Confirmed response chunk is empty")
+            current = success(request(process, "session.get", {"session_id": session_id}))
+            advanced = success(request(process, "session.advance", {
+                "session_id": session_id, "expected_revision": current["revision"],
+                "idempotency_key": str(uuid4()),
+            }))
+            if advanced.get("phase") != "COMPARISON":
+                raise RuntimeError("Four confirmed responses did not pass the server gate")
+
             assert process.stdin is not None
             process.stdin.close()
             return_code = process.wait(timeout=10)
@@ -132,9 +201,12 @@ def main() -> int:
     print(json.dumps({
         "status": "PASS",
         "protocol_version": 1,
-        "operations_checked": 9,
+        "operations_checked": 22,
         "tasks_created": 4,
-        "advance_gate": "INVALID_PHASE",
+        "initial_advance_gate": "INVALID_PHASE",
+        "confirmed_responses": 4,
+        "final_phase": "COMPARISON",
+        "durable_receipt_retry": "PASS",
         "stdout_framing": "clean",
         "stderr": "empty",
     }, ensure_ascii=False))

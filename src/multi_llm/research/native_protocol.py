@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from io import BufferedReader, BufferedWriter
+import base64
+import binascii
 import json
 import sqlite3
 import struct
@@ -66,6 +68,70 @@ class SessionStartArgs(MutationArgs):
 
 class SessionAdvanceArgs(MutationArgs):
     gap_reason: str | None = Field(default=None, max_length=2000)
+
+
+class TaskIdArgs(SessionIdArgs):
+    task_id: UUID
+
+
+class ChunkArgs(TaskIdArgs):
+    offset: StrictInt = Field(ge=0)
+    limit: StrictInt = Field(default=32_768, ge=1, le=32_768)
+
+
+class TaskMutationArgs(TaskIdArgs):
+    expected_revision: StrictInt = Field(ge=0)
+    idempotency_key: str = Field(min_length=1, max_length=200)
+
+
+class TaskReasonArgs(TaskMutationArgs):
+    reason: str = Field(min_length=1, max_length=2000)
+
+
+class TaskReassignArgs(TaskMutationArgs):
+    provider_id: str = Field(min_length=1, max_length=100)
+
+
+class UploadBeginArgs(TaskMutationArgs):
+    mode: Literal["create", "revise"]
+    size_bytes: StrictInt = Field(ge=1, le=8 * 1024 * 1024)
+    sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
+    expected_result_version: StrictInt | None = Field(default=None, ge=1)
+
+
+class UploadPartArgs(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    upload_id: UUID
+    part_index: StrictInt = Field(ge=0)
+    chunk_b64: str = Field(min_length=1, max_length=50_000)
+    sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
+
+
+class UploadCommitArgs(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    upload_id: UUID
+    session_id: UUID
+    task_id: UUID
+    expected_revision: StrictInt = Field(ge=0)
+    idempotency_key: str = Field(min_length=1, max_length=200)
+    source_type: Literal["web_manual"] = "web_manual"
+    reported_model: str | None = Field(default=None, max_length=200)
+
+
+class UploadAbortArgs(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    upload_id: UUID
+
+
+class ResponseListArgs(SessionIdArgs):
+    task_id: UUID | None = None
+
+
+class ResponseChunkArgs(SessionIdArgs):
+    result_id: UUID
+    version: StrictInt = Field(ge=1)
+    offset: StrictInt = Field(ge=0)
+    limit: StrictInt = Field(default=32_768, ge=1, le=32_768)
 
 
 def _read_exact(stream: BufferedReader, count: int) -> bytes:
@@ -152,6 +218,10 @@ class NativeDispatcher:
                 "operations": [
                     "system.hello", "session.create", "session.get", "session.list",
                     "session.start", "session.pause", "session.resume", "session.advance", "task.list",
+                    "task.prompt.meta", "task.prompt.chunk", "task.prompt.copy", "task.mark_awaiting",
+                    "response.upload.begin", "response.upload.part", "response.upload.commit",
+                    "response.upload.abort", "response.list", "response.chunk", "task.mark_unavailable",
+                    "task.skip", "task.reassign",
                 ],
             }
         if operation == "session.create":
@@ -189,4 +259,86 @@ class NativeDispatcher:
         if operation == "task.list":
             args = SessionIdArgs.model_validate(raw_args)
             return {"items": [task.model_dump(mode="json") for task in self.service.list_tasks(args.session_id)]}
+        if operation == "task.prompt.meta":
+            args = TaskIdArgs.model_validate(raw_args)
+            return self.service.prompt_metadata(args.session_id, args.task_id).model_dump(mode="json")
+        if operation == "task.prompt.chunk":
+            args = ChunkArgs.model_validate(raw_args)
+            chunk, total = self.service.prompt_chunk(
+                args.session_id, args.task_id, offset=args.offset, limit=args.limit
+            )
+            return {
+                "chunk_b64": base64.b64encode(chunk).decode("ascii"),
+                "offset": args.offset,
+                "size_bytes": len(chunk),
+                "total_bytes": total,
+                "done": args.offset + len(chunk) >= total,
+            }
+        if operation == "task.prompt.copy":
+            args = TaskIdArgs.model_validate(raw_args)
+            return self.service.copy_prompt(args.session_id, args.task_id).model_dump(mode="json")
+        if operation == "task.mark_awaiting":
+            args = TaskMutationArgs.model_validate(raw_args)
+            return self.service.mark_awaiting(
+                args.session_id, args.task_id, expected_revision=args.expected_revision,
+                idempotency_key=args.idempotency_key,
+            ).model_dump(mode="json")
+        if operation == "response.upload.begin":
+            args = UploadBeginArgs.model_validate(raw_args)
+            return self.service.begin_upload(
+                args.session_id, args.task_id, mode=args.mode, size_bytes=args.size_bytes,
+                sha256=args.sha256, expected_revision=args.expected_revision,
+                expected_result_version=args.expected_result_version,
+                idempotency_key=args.idempotency_key,
+            ).model_dump(mode="json")
+        if operation == "response.upload.part":
+            args = UploadPartArgs.model_validate(raw_args)
+            try:
+                chunk = base64.b64decode(args.chunk_b64, validate=True)
+            except (binascii.Error, ValueError) as exc:
+                raise ResearchDomainError("BAD_REQUEST", "Response chunk is not valid base64") from exc
+            return self.service.put_upload_part(
+                args.upload_id, part_index=args.part_index, chunk=chunk, sha256=args.sha256,
+            ).model_dump(mode="json")
+        if operation == "response.upload.commit":
+            args = UploadCommitArgs.model_validate(raw_args)
+            return self.service.commit_upload(
+                args.upload_id, idempotency_key=args.idempotency_key,
+                session_id=args.session_id, task_id=args.task_id, expected_revision=args.expected_revision,
+                source_type=args.source_type, reported_model=args.reported_model,
+            ).model_dump(mode="json")
+        if operation == "response.upload.abort":
+            args = UploadAbortArgs.model_validate(raw_args)
+            return {"aborted": self.service.abort_upload(args.upload_id)}
+        if operation == "response.list":
+            args = ResponseListArgs.model_validate(raw_args)
+            return {"items": [item.model_dump(mode="json") for item in self.service.list_responses(
+                args.session_id, args.task_id
+            )]}
+        if operation == "response.chunk":
+            args = ResponseChunkArgs.model_validate(raw_args)
+            chunk, total = self.service.response_chunk(
+                args.session_id, args.result_id, version=args.version,
+                offset=args.offset, limit=args.limit,
+            )
+            return {
+                "chunk_b64": base64.b64encode(chunk).decode("ascii"),
+                "offset": args.offset,
+                "size_bytes": len(chunk),
+                "total_bytes": total,
+                "done": args.offset + len(chunk) >= total,
+            }
+        if operation in {"task.mark_unavailable", "task.skip"}:
+            args = TaskReasonArgs.model_validate(raw_args)
+            method = self.service.mark_unavailable if operation == "task.mark_unavailable" else self.service.skip_task
+            return method(
+                args.session_id, args.task_id, reason=args.reason,
+                expected_revision=args.expected_revision, idempotency_key=args.idempotency_key,
+            ).model_dump(mode="json")
+        if operation == "task.reassign":
+            args = TaskReassignArgs.model_validate(raw_args)
+            return self.service.reassign_task(
+                args.session_id, args.task_id, provider_id=args.provider_id,
+                expected_revision=args.expected_revision, idempotency_key=args.idempotency_key,
+            ).model_dump(mode="json")
         raise ResearchDomainError("BAD_REQUEST", "Unsupported operation")

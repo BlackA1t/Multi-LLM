@@ -126,3 +126,54 @@ class SessionEvent(BaseModel):
     entity_id: UUID | None = None
     revision: int = Field(ge=0)
     created_at: datetime = Field(default_factory=utcnow)
+
+
+class PromptMetadata(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    prompt_id: UUID
+    task_id: UUID
+    version: int = Field(ge=1)
+    size_bytes: int = Field(ge=1)
+    sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
+
+
+class UploadReservation(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    upload_id: UUID
+    task_id: UUID
+    mode: str
+    size_bytes: int = Field(ge=1)
+    sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
+    next_index: int = Field(ge=0)
+    expires_at: datetime
+
+
+class UploadPartReceipt(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    upload_id: UUID
+    part_index: int = Field(ge=0)
+    next_index: int = Field(ge=0)
+
+
+class ResponseMetadata(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    result_id: UUID
+    task_id: UUID
+    version: int = Field(ge=1)
+    source_type: str
+    reported_model: str | None = None
+    size_bytes: int = Field(ge=1)
+    sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
+    created_at: datetime
+
+
+class ResponseReceipt(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    response: ResponseMetadata
+    task: ResearchTask
+    session_revision: int = Field(ge=0)

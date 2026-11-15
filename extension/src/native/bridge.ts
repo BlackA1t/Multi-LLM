@@ -19,6 +19,19 @@ const REQUIRED_OPERATIONS = [
   "session.resume",
   "session.advance",
   "task.list",
+  "task.prompt.meta",
+  "task.prompt.chunk",
+  "task.prompt.copy",
+  "task.mark_awaiting",
+  "response.upload.begin",
+  "response.upload.part",
+  "response.upload.commit",
+  "response.upload.abort",
+  "response.list",
+  "response.chunk",
+  "task.mark_unavailable",
+  "task.skip",
+  "task.reassign",
 ];
 
 export class BridgeFailure extends Error {
