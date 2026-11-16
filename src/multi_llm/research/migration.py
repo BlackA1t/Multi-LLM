@@ -166,6 +166,46 @@ MIGRATIONS: tuple[tuple[int, str], ...] = (
         ALTER TABLE research_sessions ADD COLUMN perplexity_prompt TEXT;
         ALTER TABLE research_sessions ADD COLUMN intake_version INTEGER NOT NULL DEFAULT 1;
     """),
+    (4, """
+        CREATE TABLE IF NOT EXISTS s1_packages (
+            package_id TEXT PRIMARY KEY,
+            session_id TEXT NOT NULL REFERENCES research_sessions(session_id) ON DELETE RESTRICT,
+            task_id TEXT NOT NULL UNIQUE REFERENCES research_tasks(task_id) ON DELETE RESTRICT,
+            template_version INTEGER NOT NULL,
+            input_fingerprint TEXT NOT NULL,
+            package_sha256 TEXT NOT NULL,
+            total_bytes INTEGER NOT NULL,
+            part_count INTEGER NOT NULL,
+            r0_complete INTEGER NOT NULL,
+            created_at TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS s1_package_inputs (
+            package_id TEXT NOT NULL REFERENCES s1_packages(package_id) ON DELETE RESTRICT,
+            ordinal INTEGER NOT NULL,
+            provider_id TEXT NOT NULL,
+            reported_model TEXT,
+            task_id TEXT NOT NULL REFERENCES research_tasks(task_id) ON DELETE RESTRICT,
+            status TEXT NOT NULL,
+            result_id TEXT REFERENCES research_results(result_id) ON DELETE RESTRICT,
+            result_version INTEGER,
+            sha256 TEXT,
+            gap_reason TEXT,
+            PRIMARY KEY(package_id, ordinal)
+        );
+        CREATE TABLE IF NOT EXISTS s1_package_parts (
+            package_id TEXT NOT NULL REFERENCES s1_packages(package_id) ON DELETE RESTRICT,
+            part_index INTEGER NOT NULL,
+            prompt_id TEXT NOT NULL UNIQUE REFERENCES prompt_artifacts(prompt_id) ON DELETE RESTRICT,
+            size_bytes INTEGER NOT NULL,
+            sha256 TEXT NOT NULL,
+            PRIMARY KEY(package_id, part_index)
+        );
+        CREATE TABLE IF NOT EXISTS s1_result_links (
+            result_id TEXT PRIMARY KEY REFERENCES research_results(result_id) ON DELETE RESTRICT,
+            package_id TEXT NOT NULL REFERENCES s1_packages(package_id) ON DELETE RESTRICT
+        );
+        CREATE INDEX IF NOT EXISTS ix_s1_packages_session ON s1_packages(session_id, created_at);
+    """),
 )
 
 

@@ -33,6 +33,10 @@ const REQUIRED_OPERATIONS = [
   "task.mark_unavailable",
   "task.skip",
   "task.reassign",
+  "s1.package.prepare",
+  "s1.package.get",
+  "s1.package.part.chunk",
+  "s1.package.part.copy",
 ];
 
 export class BridgeFailure extends Error {

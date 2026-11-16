@@ -71,6 +71,7 @@ export interface HelloResult {
 
 export interface Assignment {
   provider_id: string;
+  reported_model: string | null;
   role: string;
 }
 
@@ -163,6 +164,45 @@ export interface ResponseReceipt {
   response: ResponseMetadata;
   task: ResearchTask;
   session_revision: number;
+}
+
+export interface S1InputReference {
+  ordinal: number;
+  provider_id: string;
+  task_id: string;
+  status: TaskStatus;
+  result_id: string | null;
+  result_version: number | null;
+  sha256: string | null;
+  gap_reason: string | null;
+}
+
+export interface S1PackagePartMetadata {
+  part_index: number;
+  prompt_id: string;
+  size_bytes: number;
+  sha256: string;
+}
+
+export interface S1PackageMetadata {
+  package_id: string;
+  session_id: string;
+  task_id: string;
+  template_version: number;
+  input_fingerprint: string;
+  package_sha256: string;
+  total_bytes: number;
+  part_count: number;
+  r0_complete: boolean;
+  stale: boolean;
+  inputs: S1InputReference[];
+  parts: S1PackagePartMetadata[];
+  created_at: string;
+}
+
+export interface S1PrepareReceipt {
+  package: S1PackageMetadata;
+  session: ResearchSession;
 }
 
 export interface BridgeStatusMessage {
@@ -308,4 +348,29 @@ export function isResponseList(value: unknown): value is { items: ResponseMetada
 export function isResponseReceipt(value: unknown): value is ResponseReceipt {
   return isRecord(value) && isResponseMetadata(value.response) && isResearchTask(value.task)
     && Number.isInteger(value.session_revision);
+}
+
+export function isS1PackageMetadata(value: unknown): value is S1PackageMetadata {
+  if (!isRecord(value)) return false;
+  return typeof value.package_id === "string" && typeof value.session_id === "string"
+    && typeof value.task_id === "string" && Number.isInteger(value.template_version)
+    && typeof value.input_fingerprint === "string"
+    && typeof value.package_sha256 === "string" && Number.isInteger(value.total_bytes)
+    && Number.isInteger(value.part_count) && typeof value.r0_complete === "boolean"
+    && typeof value.stale === "boolean" && typeof value.created_at === "string"
+    && Array.isArray(value.inputs) && value.inputs.every((item) => isRecord(item)
+      && Number.isInteger(item.ordinal) && typeof item.provider_id === "string"
+      && (typeof item.reported_model === "string" || item.reported_model === null)
+      && typeof item.task_id === "string" && taskStatuses.has(item.status as TaskStatus)
+      && (typeof item.result_id === "string" || item.result_id === null)
+      && (Number.isInteger(item.result_version) || item.result_version === null)
+      && (typeof item.sha256 === "string" || item.sha256 === null)
+      && (typeof item.gap_reason === "string" || item.gap_reason === null))
+    && Array.isArray(value.parts) && value.parts.every((part) => isRecord(part)
+      && Number.isInteger(part.part_index) && typeof part.prompt_id === "string"
+      && Number.isInteger(part.size_bytes) && typeof part.sha256 === "string");
+}
+
+export function isS1PrepareReceipt(value: unknown): value is S1PrepareReceipt {
+  return isRecord(value) && isS1PackageMetadata(value.package) && isResearchSession(value.session);
 }

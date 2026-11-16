@@ -49,6 +49,7 @@ class TaskStatus(StrEnum):
 class TaskKind(StrEnum):
     INDEPENDENT_RESPONSE = "INDEPENDENT_RESPONSE"
     SEARCH_EVIDENCE = "SEARCH_EVIDENCE"
+    S1_SYNTHESIS = "S1_SYNTHESIS"
     STRUCTURAL_COMPARISON = "STRUCTURAL_COMPARISON"
     CRITIQUE = "CRITIQUE"
     FACT_CHECK = "FACT_CHECK"
@@ -180,3 +181,51 @@ class ResponseReceipt(BaseModel):
     response: ResponseMetadata
     task: ResearchTask
     session_revision: int = Field(ge=0)
+
+
+class S1InputReference(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    ordinal: int = Field(ge=0)
+    provider_id: NonEmptyText
+    reported_model: str | None = Field(default=None, max_length=200)
+    task_id: UUID
+    status: TaskStatus
+    result_id: UUID | None = None
+    result_version: int | None = Field(default=None, ge=1)
+    sha256: str | None = Field(default=None, pattern=r"^[a-f0-9]{64}$")
+    gap_reason: str | None = Field(default=None, max_length=2000)
+
+
+class S1PackagePartMetadata(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    part_index: int = Field(ge=0)
+    prompt_id: UUID
+    size_bytes: int = Field(ge=1)
+    sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
+
+
+class S1PackageMetadata(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    package_id: UUID
+    session_id: UUID
+    task_id: UUID
+    template_version: int = Field(ge=1)
+    input_fingerprint: str = Field(pattern=r"^[a-f0-9]{64}$")
+    package_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
+    total_bytes: int = Field(ge=1)
+    part_count: int = Field(ge=1)
+    r0_complete: bool
+    stale: bool = False
+    inputs: list[S1InputReference]
+    parts: list[S1PackagePartMetadata]
+    created_at: datetime
+
+
+class S1PrepareReceipt(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    package: S1PackageMetadata
+    session: ResearchSession

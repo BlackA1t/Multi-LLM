@@ -45,6 +45,10 @@ const taskTools = (onImport = vi.fn().mockResolvedValue(undefined)) => ({
   onUnavailable: vi.fn().mockResolvedValue(undefined),
   onSkip: vi.fn().mockResolvedValue(undefined),
   onReassign: vi.fn().mockResolvedValue(undefined),
+  onPrepareS1: vi.fn().mockResolvedValue(undefined),
+  onLoadS1Package: vi.fn().mockRejectedValue(new Error("not used")),
+  onCopyS1Part: vi.fn().mockResolvedValue(undefined),
+  onLoadS1Part: vi.fn().mockResolvedValue("stored S1 part"),
 });
 
 describe("UI safety and feedback", () => {
@@ -103,5 +107,40 @@ describe("UI safety and feedback", () => {
     await user.click(screen.getByRole("button", { name: "Импорт ответа" }));
     expect(screen.getByRole("button", { name: "Перейти к проверке" })).toBeDisabled();
     expect(onImport).not.toHaveBeenCalled();
+  });
+
+  it("shows numbered S1 package parts and copy progress", async () => {
+    const user = userEvent.setup();
+    const s1Task: ResearchTask = {
+      ...task, phase: "COMPARISON", kind: "S1_SYNTHESIS", provider_id: "chatgpt",
+      role: "s1_synthesizer",
+    };
+    const tools = taskTools();
+    tools.onLoadS1Package.mockResolvedValue({
+      package_id: "423e4567-e89b-42d3-a456-426614174000",
+      session_id: session.session_id,
+      task_id: s1Task.task_id,
+      template_version: 1,
+      input_fingerprint: "a".repeat(64),
+      package_sha256: "b".repeat(64),
+      total_bytes: 900_000,
+      part_count: 2,
+      r0_complete: true,
+      stale: false,
+      inputs: [],
+      parts: [
+        { part_index: 0, prompt_id: "p0", size_bytes: 500_000, sha256: "c".repeat(64) },
+        { part_index: 1, prompt_id: "p1", size_bytes: 400_000, sha256: "d".repeat(64) },
+      ],
+      created_at: session.created_at,
+    });
+    render(<TaskList tasks={[s1Task]} phase="COMPARISON" tools={tools} />);
+    await user.click(screen.getByRole("button", { name: "Показать пакет S1" }));
+    expect(screen.getByRole("status")).toHaveTextContent("0/2");
+    expect(screen.getByText(/Часть 1\/2/)).toBeVisible();
+    const copyButtons = screen.getAllByRole("button", { name: "Копировать" });
+    await user.click(copyButtons[0]);
+    expect(tools.onCopyS1Part).toHaveBeenCalledWith("423e4567-e89b-42d3-a456-426614174000", 0);
+    expect(screen.getByRole("status")).toHaveTextContent("1/2");
   });
 });

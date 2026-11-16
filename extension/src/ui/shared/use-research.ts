@@ -275,6 +275,14 @@ export function useResearch() {
     markUnavailable: (taskId: string, reason: string) => session ? taskAction(() => controller.markUnavailable(session, taskId, reason)) : Promise.reject(new Error("No session")),
     skipTask: (taskId: string, reason: string) => session ? taskAction(() => controller.skip(session, taskId, reason)) : Promise.reject(new Error("No session")),
     reassignTask: (taskId: string, providerId: string) => session ? taskAction(() => controller.reassign(session, taskId, providerId)) : Promise.reject(new Error("No session")),
+    prepareS1: () => session ? taskAction(() => controller.prepareS1(session)) : Promise.reject(new Error("No session")),
+    loadS1Package: () => session ? controller.s1Package(session.session_id) : Promise.reject(new Error("No session")),
+    copyS1Part: (packageId: string, partIndex: number) => session
+      ? taskAction(() => controller.copyS1Part(session.session_id, packageId, partIndex))
+      : Promise.reject(new Error("No session")),
+    loadS1Part: (packageId: string, partIndex: number, sizeBytes: number) => session
+      ? controller.s1PartText(session.session_id, packageId, partIndex, sizeBytes)
+      : Promise.reject(new Error("No session")),
     clearActive,
   };
 }

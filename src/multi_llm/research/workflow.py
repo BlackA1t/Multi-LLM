@@ -95,7 +95,7 @@ class RoundManager:
     @staticmethod
     def templates_for(phase: Phase) -> list[TaskTemplate]:
         templates = {
-            Phase.COMPARISON: [TaskTemplate(TaskKind.STRUCTURAL_COMPARISON, "structural_comparator", "local")],
+            Phase.COMPARISON: [TaskTemplate(TaskKind.S1_SYNTHESIS, "s1_synthesizer", "chatgpt")],
             Phase.CRITIQUE: [
                 TaskTemplate(TaskKind.CRITIQUE, "critic_1"),
                 TaskTemplate(TaskKind.CRITIQUE, "critic_2"),

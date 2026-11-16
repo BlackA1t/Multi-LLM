@@ -9,7 +9,7 @@ from .clipboard import copy_text
 from .models import (
     Assignment, PromptMetadata, ResearchSession, ResearchTask, ResponseMetadata,
     ResponseReceipt, SessionStatus, SessionSummary, TaskStatus, UploadPartReceipt,
-    UploadReservation,
+    UploadReservation, S1PackageMetadata, S1PrepareReceipt,
 )
 from .repository import MAX_CHUNK_BYTES, ResearchRepository
 from .provider_catalog import R0_ASSIGNMENTS
@@ -118,6 +118,48 @@ class ResearchSessionService:
             session_id, expected_revision=expected_revision,
             idempotency_key=idempotency_key, gap_reason=gap_reason,
         )
+
+    def prepare_s1(
+        self,
+        session_id: UUID | str,
+        *,
+        expected_revision: int,
+        idempotency_key: str,
+    ) -> S1PrepareReceipt:
+        return self.repository.prepare_s1(
+            session_id, expected_revision=expected_revision, idempotency_key=idempotency_key
+        )
+
+    def s1_package(self, session_id: UUID | str) -> S1PackageMetadata:
+        return self.repository.get_s1_package(session_id)
+
+    def s1_part_chunk(
+        self,
+        session_id: UUID | str,
+        package_id: UUID | str,
+        *,
+        part_index: int,
+        offset: int,
+        limit: int,
+    ) -> tuple[bytes, int]:
+        return self.repository.get_s1_part_chunk(
+            session_id, package_id, part_index=part_index, offset=offset, limit=limit
+        )
+
+    def copy_s1_part(
+        self, session_id: UUID | str, package_id: UUID | str, part_index: int
+    ) -> S1PackageMetadata:
+        package = self.repository.get_s1_package(session_id)
+        if str(package.package_id) != str(package_id):
+            raise ResearchDomainError("NOT_FOUND", "S1 package was not found")
+        if package.stale:
+            raise ResearchDomainError(
+                "STALE_REVISION", "S1 package inputs changed; prepare a current package",
+                retryable=True,
+            )
+        text = self.repository.get_s1_part_text(session_id, package_id, part_index)
+        self.clipboard_writer(text)
+        return package
 
     def list_tasks(self, session_id: UUID | str) -> list[ResearchTask]:
         return self.repository.list_tasks(session_id)

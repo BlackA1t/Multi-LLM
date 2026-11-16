@@ -141,6 +141,19 @@ class ResponseChunkArgs(SessionIdArgs):
     limit: StrictInt = Field(default=32_768, ge=1, le=32_768)
 
 
+class S1PackageArgs(SessionIdArgs):
+    package_id: UUID
+
+
+class S1PartArgs(S1PackageArgs):
+    part_index: StrictInt = Field(ge=0)
+
+
+class S1PartChunkArgs(S1PartArgs):
+    offset: StrictInt = Field(ge=0)
+    limit: StrictInt = Field(default=32_768, ge=1, le=32_768)
+
+
 def _read_exact(stream: BufferedReader, count: int) -> bytes:
     chunks: list[bytes] = []
     remaining = count
@@ -228,7 +241,8 @@ class NativeDispatcher:
                     "task.prompt.meta", "task.prompt.chunk", "task.prompt.copy", "task.mark_awaiting",
                     "response.upload.begin", "response.upload.part", "response.upload.commit",
                     "response.upload.abort", "response.list", "response.chunk", "task.mark_unavailable",
-                    "task.skip", "task.reassign",
+                    "task.skip", "task.reassign", "s1.package.prepare", "s1.package.get",
+                    "s1.package.part.chunk", "s1.package.part.copy",
                 ],
             }
         if operation == "session.create":
@@ -265,6 +279,31 @@ class NativeDispatcher:
             return self.service.advance(
                 args.session_id, expected_revision=args.expected_revision,
                 idempotency_key=args.idempotency_key, gap_reason=args.gap_reason,
+            ).model_dump(mode="json")
+        if operation == "s1.package.prepare":
+            args = MutationArgs.model_validate(raw_args)
+            return self.service.prepare_s1(
+                args.session_id, expected_revision=args.expected_revision,
+                idempotency_key=args.idempotency_key,
+            ).model_dump(mode="json")
+        if operation == "s1.package.get":
+            args = SessionIdArgs.model_validate(raw_args)
+            return self.service.s1_package(args.session_id).model_dump(mode="json")
+        if operation == "s1.package.part.chunk":
+            args = S1PartChunkArgs.model_validate(raw_args)
+            chunk, total = self.service.s1_part_chunk(
+                args.session_id, args.package_id, part_index=args.part_index,
+                offset=args.offset, limit=args.limit,
+            )
+            return {
+                "chunk_b64": base64.b64encode(chunk).decode("ascii"),
+                "offset": args.offset, "size_bytes": len(chunk), "total_bytes": total,
+                "done": args.offset + len(chunk) >= total,
+            }
+        if operation == "s1.package.part.copy":
+            args = S1PartArgs.model_validate(raw_args)
+            return self.service.copy_s1_part(
+                args.session_id, args.package_id, args.part_index
             ).model_dump(mode="json")
         if operation == "task.list":
             args = SessionIdArgs.model_validate(raw_args)

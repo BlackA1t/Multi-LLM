@@ -9,12 +9,15 @@ import type {
   ResearchTask,
   ResponseMetadata,
   ResponseReceipt,
+  S1PackageMetadata,
+  S1PrepareReceipt,
   SessionListResult,
   TaskListResult,
 } from "../native/contracts";
 import {
   isChunkResult, isPromptMetadata, isResearchSession, isResponseList, isResponseReceipt,
   isSessionListResult, isTaskListResult, isUploadReservation,
+  isS1PackageMetadata, isS1PrepareReceipt,
 } from "../native/contracts";
 
 const CHUNK_BYTES = 32_768;
@@ -197,6 +200,30 @@ export class SessionController {
     }, isResponseList).then((result) => result.items);
   }
 
+  prepareS1(session: ResearchSession, key = crypto.randomUUID()): Promise<S1PrepareReceipt> {
+    return this.client.request("s1.package.prepare", {
+      session_id: session.session_id, expected_revision: session.revision,
+      idempotency_key: key,
+    }, isS1PrepareReceipt);
+  }
+
+  s1Package(sessionId: string): Promise<S1PackageMetadata> {
+    return this.client.request("s1.package.get", { session_id: sessionId }, isS1PackageMetadata);
+  }
+
+  copyS1Part(sessionId: string, packageId: string, partIndex: number): Promise<S1PackageMetadata> {
+    return this.client.request("s1.package.part.copy", {
+      session_id: sessionId, package_id: packageId, part_index: partIndex,
+    }, isS1PackageMetadata);
+  }
+
+  async s1PartText(sessionId: string, packageId: string, partIndex: number, sizeBytes: number): Promise<string> {
+    const bytes = await this.readChunks("s1.package.part.chunk", {
+      session_id: sessionId, package_id: packageId, part_index: partIndex,
+    }, sizeBytes);
+    return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+  }
+
   async responseText(sessionId: string, response: ResponseMetadata): Promise<string> {
     const bytes = await this.readChunks("response.chunk", {
       session_id: sessionId, result_id: response.result_id, version: response.version,
@@ -302,7 +329,7 @@ export class SessionController {
   }
 
   private async readChunks(
-    op: "task.prompt.chunk" | "response.chunk",
+    op: "task.prompt.chunk" | "response.chunk" | "s1.package.part.chunk",
     baseArgs: Record<string, unknown>,
     expectedBytes: number,
   ): Promise<Uint8Array> {

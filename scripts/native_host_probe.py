@@ -16,6 +16,7 @@ from uuid import uuid4
 LENGTH = struct.Struct("=I")
 REQUIRED_OPERATIONS = {
     "session.update_intake",
+    "s1.package.prepare", "s1.package.get", "s1.package.part.chunk", "s1.package.part.copy",
     "task.prompt.meta", "task.prompt.chunk", "task.prompt.copy", "task.mark_awaiting",
     "response.upload.begin", "response.upload.part", "response.upload.commit",
     "response.upload.abort", "response.list", "response.chunk", "task.mark_unavailable",
@@ -181,6 +182,42 @@ def main() -> int:
             }))
             if advanced.get("phase") != "COMPARISON":
                 raise RuntimeError("Eight confirmed responses did not pass the server gate")
+            package = success(request(process, "s1.package.get", {"session_id": session_id}))
+            if package.get("part_count", 0) < 1 or len(package.get("inputs", [])) != 9:
+                raise RuntimeError("S1 package manifest is incomplete")
+            first_part = package["parts"][0]
+            package_chunk = success(request(process, "s1.package.part.chunk", {
+                "session_id": session_id, "package_id": package["package_id"],
+                "part_index": 0, "offset": 0, "limit": 32768,
+            }))
+            if not base64.b64decode(package_chunk["chunk_b64"], validate=True):
+                raise RuntimeError("S1 package part is empty")
+            s1_tasks = success(request(process, "task.list", {"session_id": session_id}))["items"]
+            s1_task = next((item for item in s1_tasks if item.get("kind") == "S1_SYNTHESIS"), None)
+            if not s1_task:
+                raise RuntimeError("S1 synthesis task is missing")
+            current = success(request(process, "session.get", {"session_id": session_id}))
+            s1_payload = "Синтетический отчёт S1".encode("utf-8")
+            s1_digest = hashlib.sha256(s1_payload).hexdigest()
+            s1_key = str(uuid4())
+            s1_upload = success(request(process, "response.upload.begin", {
+                "session_id": session_id, "task_id": s1_task["task_id"], "mode": "create",
+                "size_bytes": len(s1_payload), "sha256": s1_digest,
+                "expected_revision": current["revision"], "idempotency_key": s1_key,
+            }))
+            success(request(process, "response.upload.part", {
+                "upload_id": s1_upload["upload_id"], "part_index": 0,
+                "chunk_b64": base64.b64encode(s1_payload).decode("ascii"),
+                "sha256": s1_digest,
+            }))
+            s1_receipt = success(request(process, "response.upload.commit", {
+                "upload_id": s1_upload["upload_id"], "session_id": session_id,
+                "task_id": s1_task["task_id"], "source_type": "web_manual",
+                "reported_model": "ChatGPT Plus", "expected_revision": current["revision"],
+                "idempotency_key": s1_key,
+            }))
+            if s1_receipt.get("task", {}).get("status") != "RECEIVED":
+                raise RuntimeError("S1 report was not stored")
 
             assert process.stdin is not None
             process.stdin.close()
@@ -198,11 +235,13 @@ def main() -> int:
     print(json.dumps({
         "status": "PASS",
         "protocol_version": 1,
-        "operations_checked": 23,
+        "operations_checked": 27,
         "tasks_created": 9,
         "initial_advance_gate": "INVALID_PHASE",
         "confirmed_responses": 8,
         "final_phase": "COMPARISON",
+        "s1_package_parts": package["part_count"],
+        "s1_import": "RECEIVED",
         "durable_receipt_retry": "PASS",
         "stdout_framing": "clean",
         "stderr": "empty",

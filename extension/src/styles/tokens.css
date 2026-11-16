@@ -146,12 +146,17 @@ input:hover, textarea:hover { border-color: var(--accent); }
 
 .task-section { margin-top: var(--space-5); }
 .task-list { display: grid; gap: var(--space-2); }
-.task-list li { display: grid; grid-template-columns: 32px minmax(0, 1fr) auto; align-items: center; gap: var(--space-3); padding: var(--space-3); border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--surface-raised); }
+.task-list > li { display: grid; grid-template-columns: 32px minmax(0, 1fr) auto; align-items: center; gap: var(--space-3); padding: var(--space-3); border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--surface-raised); }
 .task-actions { grid-column: 2 / -1; display: flex; flex-wrap: wrap; gap: var(--space-2); }
 .task-actions .primary-button, .task-actions .secondary-button { min-height: 38px; margin: 0; }
 .task-actions .text-button { min-height: 38px; }
 .task-reason { grid-column: 2 / -1; margin: 0; color: var(--text-secondary); font-size: 0.82rem; }
 .response-meta { grid-column: 2 / -1; margin: 0; color: var(--text-secondary); font-size: 0.76rem; overflow-wrap: anywhere; }
+.s1-package { grid-column: 2 / -1; min-width: 0; padding: var(--space-3); border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--surface); }
+.s1-package > p { margin: 0 0 var(--space-2); }
+.s1-part-list { display: grid; gap: var(--space-2); margin: var(--space-3) 0 0; padding: 0; list-style: none; }
+.s1-part-list li { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; align-items: center; gap: var(--space-2); padding-block: var(--space-2); border-top: 1px solid var(--border); }
+.s1-part-list button { min-height: 38px; }
 .danger-text { color: var(--error); }
 .task-index { display: grid; width: 30px; height: 30px; place-items: center; border-radius: 50%; background: var(--surface-accent); color: var(--accent); font-size: 0.78rem; font-weight: 700; }
 .task-list strong, .task-list div > span { display: block; overflow-wrap: anywhere; }
@@ -198,8 +203,10 @@ input:hover, textarea:hover { border-color: var(--accent); }
   .primary-nav svg { display: none; }
   .panel-card { padding: var(--space-4); }
   .session-title-row { display: grid; }
-  .task-list li { grid-template-columns: 30px minmax(0, 1fr); }
+  .task-list > li { grid-template-columns: 30px minmax(0, 1fr); }
   .task-list .status-badge { grid-column: 2; justify-self: start; }
+  .s1-part-list li { grid-template-columns: minmax(0, 1fr); }
+  .s1-part-list button { width: 100%; }
 }
 
 @media (prefers-reduced-motion: reduce) {

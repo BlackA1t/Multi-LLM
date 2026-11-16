@@ -30,6 +30,10 @@ export function ResearchApp({ mode }: { mode: "sidepanel" | "workspace" }) {
     onUnavailable: research.markUnavailable,
     onSkip: research.skipTask,
     onReassign: research.reassignTask,
+    onPrepareS1: research.prepareS1,
+    onLoadS1Package: research.loadS1Package,
+    onCopyS1Part: research.copyS1Part,
+    onLoadS1Part: research.loadS1Part,
   };
   const actions = research.session ? <SessionActions
     session={research.session}

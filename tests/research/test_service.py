@@ -1,3 +1,5 @@
+import hashlib
+
 import pytest
 
 from multi_llm.research import Phase, ResearchSessionService, SessionStatus, TaskStatus
@@ -23,23 +25,44 @@ def transition_all_tasks(service, session_id, revision, prefix):
     return service.get(session_id).revision
 
 
-def test_full_fixed_workflow_survives_service_restart(tmp_path):
+def import_answer(service, session_id, task, text, key):
+    session = service.get(session_id)
+    payload = text.encode()
+    digest = hashlib.sha256(payload).hexdigest()
+    upload = service.begin_upload(
+        session_id, task.task_id, mode="create", size_bytes=len(payload), sha256=digest,
+        expected_revision=session.revision, expected_result_version=None, idempotency_key=key,
+    )
+    service.put_upload_part(upload.upload_id, part_index=0, chunk=payload, sha256=digest)
+    return service.commit_upload(
+        upload.upload_id, session_id=session_id, task_id=task.task_id,
+        expected_revision=session.revision, idempotency_key=key,
+        source_type="web_manual", reported_model=task.provider_id,
+    )
+
+
+def test_s1_phase_survives_service_restart_and_old_pipeline_is_blocked(tmp_path):
     path = tmp_path / "research.db"
     service = ResearchSessionService(path)
     session = service.create(question="Исследовать тему 🚀", idempotency_key="create")
     session = service.start(session.session_id, expected_revision=0, idempotency_key="start", assignments=assignments())
     assert session.phase == Phase.INDEPENDENT
 
-    expected_phases = [Phase.COMPARISON, Phase.CRITIQUE, Phase.FACT_CHECK, Phase.ARBITRATION, Phase.REVIEW, Phase.DONE]
-    for index, target in enumerate(expected_phases):
-        transition_all_tasks(service, session.session_id, session.revision, f"phase-{index}")
-        service = ResearchSessionService(path)
-        session = service.advance(
-            session.session_id, expected_revision=service.get(session.session_id).revision,
-            idempotency_key=f"advance-{index}",
+    for index, task in enumerate(service.list_tasks(session.session_id)):
+        import_answer(service, session.session_id, task, f"answer-{index}", f"answer-{index}")
+    service = ResearchSessionService(path)
+    session = service.advance(
+        session.session_id, expected_revision=service.get(session.session_id).revision,
+        idempotency_key="advance-s1",
+    )
+    assert session.phase == Phase.COMPARISON
+    package = ResearchSessionService(path).s1_package(session.session_id)
+    assert package.r0_complete is True and package.part_count >= 1
+    with pytest.raises(ResearchDomainError, match="P1.0.5C"):
+        service.advance(
+            session.session_id, expected_revision=session.revision,
+            idempotency_key="blocked-old-pipeline",
         )
-        assert session.phase == target
-    assert session.status == SessionStatus.COMPLETED
 
 
 def test_seven_response_gap_is_recorded_and_finishes_with_gaps(tmp_path):
@@ -48,14 +71,7 @@ def test_seven_response_gap_is_recorded_and_finishes_with_gaps(tmp_path):
     service.start(session.session_id, expected_revision=0, idempotency_key="start", assignments=assignments())
     tasks = service.list_tasks(session.session_id)
     for index, task in enumerate(tasks[:7]):
-        service.update_task_status(
-            session.session_id, task.task_id, status=TaskStatus.AWAITING_USER,
-            expected_revision=service.get(session.session_id).revision, idempotency_key=f"a-{index}",
-        )
-        service.update_task_status(
-            session.session_id, task.task_id, status=TaskStatus.RECEIVED,
-            expected_revision=service.get(session.session_id).revision, idempotency_key=f"r-{index}",
-        )
+        import_answer(service, session.session_id, task, f"answer-{index}", f"r-{index}")
     missing = tasks[7]
     service.update_task_status(
         session.session_id, missing.task_id, status=TaskStatus.UNAVAILABLE,
