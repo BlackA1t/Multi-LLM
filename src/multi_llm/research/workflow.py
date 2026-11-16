@@ -97,8 +97,9 @@ class RoundManager:
         templates = {
             Phase.COMPARISON: [TaskTemplate(TaskKind.S1_SYNTHESIS, "s1_synthesizer", "chatgpt")],
             Phase.CRITIQUE: [
-                TaskTemplate(TaskKind.CRITIQUE, "critic_1"),
-                TaskTemplate(TaskKind.CRITIQUE, "critic_2"),
+                TaskTemplate(TaskKind.S1_REVIEW, "s1_reviewer", "deepseek"),
+                TaskTemplate(TaskKind.S1_REVIEW, "s1_reviewer", "grok"),
+                TaskTemplate(TaskKind.S1_REVIEW, "s1_reviewer", "gemini"),
             ],
             Phase.FACT_CHECK: [TaskTemplate(TaskKind.FACT_CHECK, "fact_checker", "perplexity")],
             Phase.ARBITRATION: [TaskTemplate(TaskKind.ARBITRATION, "arbiter", "chatgpt")],

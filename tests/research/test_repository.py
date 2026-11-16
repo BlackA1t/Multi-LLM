@@ -24,7 +24,7 @@ def test_database_is_separate_migrated_persistent_and_has_safety_pragmas(tmp_pat
 
     with sqlite3.connect(path) as connection:
         assert connection.execute("PRAGMA journal_mode").fetchone()[0].lower() == "wal"
-        assert connection.execute("SELECT COUNT(*) FROM schema_migrations").fetchone()[0] == 4
+        assert connection.execute("SELECT COUNT(*) FROM schema_migrations").fetchone()[0] == 5
         columns = {row[1] for row in connection.execute("PRAGMA table_info(session_events)")}
         assert "question" not in columns and "message" not in columns and "payload" not in columns
 
@@ -35,7 +35,7 @@ def test_concurrent_repository_initialization_is_migration_safe(tmp_path):
         repositories = list(pool.map(lambda _index: ResearchRepository(path), range(4)))
     assert len(repositories) == 4
     with sqlite3.connect(path) as connection:
-        assert connection.execute("SELECT COUNT(*) FROM schema_migrations").fetchone()[0] == 4
+        assert connection.execute("SELECT COUNT(*) FROM schema_migrations").fetchone()[0] == 5
 
 
 def test_failed_idempotent_create_rolls_back_without_duplicate(tmp_path):

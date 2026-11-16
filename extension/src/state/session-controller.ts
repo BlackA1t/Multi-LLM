@@ -9,6 +9,8 @@ import type {
   ResearchTask,
   ResponseMetadata,
   ResponseReceipt,
+  ReviewerPackageMetadata,
+  ReviewerPrepareReceipt,
   S1PackageMetadata,
   S1PrepareReceipt,
   SessionListResult,
@@ -18,6 +20,7 @@ import {
   isChunkResult, isPromptMetadata, isResearchSession, isResponseList, isResponseReceipt,
   isSessionListResult, isTaskListResult, isUploadReservation,
   isS1PackageMetadata, isS1PrepareReceipt,
+  isReviewerPackageList, isReviewerPackageMetadata, isReviewerPrepareReceipt,
 } from "../native/contracts";
 
 const CHUNK_BYTES = 32_768;
@@ -224,6 +227,32 @@ export class SessionController {
     return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
   }
 
+  prepareReviewers(session: ResearchSession, key = crypto.randomUUID()): Promise<ReviewerPrepareReceipt> {
+    return this.client.request("review.package.prepare", {
+      session_id: session.session_id, expected_revision: session.revision,
+      idempotency_key: key,
+    }, isReviewerPrepareReceipt);
+  }
+
+  reviewerPackages(sessionId: string): Promise<ReviewerPackageMetadata[]> {
+    return this.client.request("review.package.list", {
+      session_id: sessionId,
+    }, isReviewerPackageList).then((result) => result.items);
+  }
+
+  copyReviewerPart(sessionId: string, packageId: string, partIndex: number): Promise<ReviewerPackageMetadata> {
+    return this.client.request("review.package.part.copy", {
+      session_id: sessionId, package_id: packageId, part_index: partIndex,
+    }, isReviewerPackageMetadata);
+  }
+
+  async reviewerPartText(sessionId: string, packageId: string, partIndex: number, sizeBytes: number): Promise<string> {
+    const bytes = await this.readChunks("review.package.part.chunk", {
+      session_id: sessionId, package_id: packageId, part_index: partIndex,
+    }, sizeBytes);
+    return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+  }
+
   async responseText(sessionId: string, response: ResponseMetadata): Promise<string> {
     const bytes = await this.readChunks("response.chunk", {
       session_id: sessionId, result_id: response.result_id, version: response.version,
@@ -329,7 +358,7 @@ export class SessionController {
   }
 
   private async readChunks(
-    op: "task.prompt.chunk" | "response.chunk" | "s1.package.part.chunk",
+    op: "task.prompt.chunk" | "response.chunk" | "s1.package.part.chunk" | "review.package.part.chunk",
     baseArgs: Record<string, unknown>,
     expectedBytes: number,
   ): Promise<Uint8Array> {

@@ -196,12 +196,13 @@ def test_prepare_is_idempotent_s1_import_is_versioned_linked_and_persistent(tmp_
     with sqlite3.connect(path) as connection:
         assert connection.execute("SELECT COUNT(*) FROM s1_result_links").fetchone()[0] == 1
         assert connection.execute("SELECT COUNT(*) FROM response_revisions WHERE result_id = ?", (str(revised.response.result_id),)).fetchone()[0] == 2
-    with pytest.raises(ResearchDomainError) as blocked:
-        restarted.advance(
-            session.session_id, expected_revision=restarted.get(session.session_id).revision,
-            idempotency_key="old-pipeline",
-        )
-    assert blocked.value.code == "NOT_IMPLEMENTED"
+    review = restarted.advance(
+        session.session_id, expected_revision=restarted.get(session.session_id).revision,
+        idempotency_key="review-stage",
+    )
+    assert review.phase == Phase.CRITIQUE
+    assert [task.provider_id for task in restarted.list_tasks(session.session_id)
+            if task.kind == TaskKind.S1_REVIEW] == ["deepseek", "grok", "gemini"]
 
 
 def test_package_staleness_is_detected_if_an_input_revision_changes(tmp_path):

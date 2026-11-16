@@ -41,7 +41,7 @@ def import_answer(service, session_id, task, text, key):
     )
 
 
-def test_s1_phase_survives_service_restart_and_old_pipeline_is_blocked(tmp_path):
+def test_s1_phase_survives_service_restart_and_requires_received_s1(tmp_path):
     path = tmp_path / "research.db"
     service = ResearchSessionService(path)
     session = service.create(question="Исследовать тему 🚀", idempotency_key="create")
@@ -58,7 +58,7 @@ def test_s1_phase_survives_service_restart_and_old_pipeline_is_blocked(tmp_path)
     assert session.phase == Phase.COMPARISON
     package = ResearchSessionService(path).s1_package(session.session_id)
     assert package.r0_complete is True and package.part_count >= 1
-    with pytest.raises(ResearchDomainError, match="P1.0.5C"):
+    with pytest.raises(ResearchDomainError, match="incomplete"):
         service.advance(
             session.session_id, expected_revision=session.revision,
             idempotency_key="blocked-old-pipeline",

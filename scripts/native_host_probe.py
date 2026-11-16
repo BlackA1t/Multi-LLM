@@ -17,6 +17,8 @@ LENGTH = struct.Struct("=I")
 REQUIRED_OPERATIONS = {
     "session.update_intake",
     "s1.package.prepare", "s1.package.get", "s1.package.part.chunk", "s1.package.part.copy",
+    "review.package.prepare", "review.package.list",
+    "review.package.part.chunk", "review.package.part.copy",
     "task.prompt.meta", "task.prompt.chunk", "task.prompt.copy", "task.mark_awaiting",
     "response.upload.begin", "response.upload.part", "response.upload.commit",
     "response.upload.abort", "response.list", "response.chunk", "task.mark_unavailable",
@@ -219,6 +221,61 @@ def main() -> int:
             if s1_receipt.get("task", {}).get("status") != "RECEIVED":
                 raise RuntimeError("S1 report was not stored")
 
+            current = success(request(process, "session.get", {"session_id": session_id}))
+            review_phase = success(request(process, "session.advance", {
+                "session_id": session_id, "expected_revision": current["revision"],
+                "idempotency_key": str(uuid4()),
+            }))
+            if review_phase.get("phase") != "CRITIQUE":
+                raise RuntimeError("Received S1 did not open independent review")
+            review_tasks = [item for item in success(request(
+                process, "task.list", {"session_id": session_id}
+            ))["items"] if item.get("kind") == "S1_REVIEW"]
+            if [item.get("provider_id") for item in review_tasks] != ["deepseek", "grok", "gemini"]:
+                raise RuntimeError("Independent reviewer set is incorrect")
+            review_packages = success(request(
+                process, "review.package.list", {"session_id": session_id}
+            ))["items"]
+            if len(review_packages) != 3 or any(item.get("stale") for item in review_packages):
+                raise RuntimeError("Current reviewer packages are missing or stale")
+            review_chunk = success(request(process, "review.package.part.chunk", {
+                "session_id": session_id, "package_id": review_packages[0]["package_id"],
+                "part_index": 0, "offset": 0, "limit": 32768,
+            }))
+            if not base64.b64decode(review_chunk["chunk_b64"], validate=True):
+                raise RuntimeError("Reviewer package part is empty")
+            for index, task in enumerate(review_tasks):
+                current = success(request(process, "session.get", {"session_id": session_id}))
+                review_payload = f"Синтетическая независимая рецензия {index}".encode("utf-8")
+                review_digest = hashlib.sha256(review_payload).hexdigest()
+                review_key = str(uuid4())
+                review_upload = success(request(process, "response.upload.begin", {
+                    "session_id": session_id, "task_id": task["task_id"], "mode": "create",
+                    "size_bytes": len(review_payload), "sha256": review_digest,
+                    "expected_revision": current["revision"], "idempotency_key": review_key,
+                }))
+                success(request(process, "response.upload.part", {
+                    "upload_id": review_upload["upload_id"], "part_index": 0,
+                    "chunk_b64": base64.b64encode(review_payload).decode("ascii"),
+                    "sha256": review_digest,
+                }))
+                review_receipt = success(request(process, "response.upload.commit", {
+                    "upload_id": review_upload["upload_id"], "session_id": session_id,
+                    "task_id": task["task_id"], "source_type": "web_manual",
+                    "reported_model": task["provider_id"],
+                    "expected_revision": current["revision"], "idempotency_key": review_key,
+                }))
+                if review_receipt.get("task", {}).get("status") != "RECEIVED":
+                    raise RuntimeError("Independent review was not stored")
+            current = success(request(process, "session.get", {"session_id": session_id}))
+            no_fact_check = request(process, "session.advance", {
+                "session_id": session_id, "expected_revision": current["revision"],
+                "idempotency_key": str(uuid4()),
+            })
+            if (no_fact_check.get("ok") is not False
+                    or no_fact_check.get("error", {}).get("code") != "NOT_IMPLEMENTED"):
+                raise RuntimeError("Legacy FACT_CHECK route was not blocked")
+
             assert process.stdin is not None
             process.stdin.close()
             return_code = process.wait(timeout=10)
@@ -235,13 +292,16 @@ def main() -> int:
     print(json.dumps({
         "status": "PASS",
         "protocol_version": 1,
-        "operations_checked": 27,
-        "tasks_created": 9,
+        "operations_checked": 31,
+        "tasks_created": 13,
         "initial_advance_gate": "INVALID_PHASE",
         "confirmed_responses": 8,
-        "final_phase": "COMPARISON",
+        "final_phase": "CRITIQUE",
         "s1_package_parts": package["part_count"],
         "s1_import": "RECEIVED",
+        "reviewer_packages": 3,
+        "review_imports": 3,
+        "legacy_fact_check": "BLOCKED",
         "durable_receipt_retry": "PASS",
         "stdout_framing": "clean",
         "stderr": "empty",

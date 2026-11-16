@@ -58,10 +58,10 @@ def test_v1_database_migrates_without_losing_session_task_or_prompt(tmp_path):
     assert str(service.list_tasks(session_id)[0].task_id) == task_id
     assert service.repository.get_prompt_text(session_id, task_id) == "original P103 prompt"
     with sqlite3.connect(path) as connection:
-        assert [row[0] for row in connection.execute("SELECT version FROM schema_migrations ORDER BY version")] == [1, 2, 3, 4]
+        assert [row[0] for row in connection.execute("SELECT version FROM schema_migrations ORDER BY version")] == [1, 2, 3, 4, 5]
     ResearchSessionService(path)
     with sqlite3.connect(path) as connection:
-        assert connection.execute("SELECT COUNT(*) FROM schema_migrations").fetchone()[0] == 4
+        assert connection.execute("SELECT COUNT(*) FROM schema_migrations").fetchone()[0] == 5
 
 
 def upload(

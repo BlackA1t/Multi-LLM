@@ -243,6 +243,8 @@ class NativeDispatcher:
                     "response.upload.abort", "response.list", "response.chunk", "task.mark_unavailable",
                     "task.skip", "task.reassign", "s1.package.prepare", "s1.package.get",
                     "s1.package.part.chunk", "s1.package.part.copy",
+                    "review.package.prepare", "review.package.list",
+                    "review.package.part.chunk", "review.package.part.copy",
                 ],
             }
         if operation == "session.create":
@@ -303,6 +305,32 @@ class NativeDispatcher:
         if operation == "s1.package.part.copy":
             args = S1PartArgs.model_validate(raw_args)
             return self.service.copy_s1_part(
+                args.session_id, args.package_id, args.part_index
+            ).model_dump(mode="json")
+        if operation == "review.package.prepare":
+            args = MutationArgs.model_validate(raw_args)
+            return self.service.prepare_reviewers(
+                args.session_id, expected_revision=args.expected_revision,
+                idempotency_key=args.idempotency_key,
+            ).model_dump(mode="json")
+        if operation == "review.package.list":
+            args = SessionIdArgs.model_validate(raw_args)
+            return {"items": [item.model_dump(mode="json") for item in
+                              self.service.reviewer_packages(args.session_id)]}
+        if operation == "review.package.part.chunk":
+            args = S1PartChunkArgs.model_validate(raw_args)
+            chunk, total = self.service.reviewer_part_chunk(
+                args.session_id, args.package_id, part_index=args.part_index,
+                offset=args.offset, limit=args.limit,
+            )
+            return {
+                "chunk_b64": base64.b64encode(chunk).decode("ascii"),
+                "offset": args.offset, "size_bytes": len(chunk), "total_bytes": total,
+                "done": args.offset + len(chunk) >= total,
+            }
+        if operation == "review.package.part.copy":
+            args = S1PartArgs.model_validate(raw_args)
+            return self.service.copy_reviewer_part(
                 args.session_id, args.package_id, args.part_index
             ).model_dump(mode="json")
         if operation == "task.list":

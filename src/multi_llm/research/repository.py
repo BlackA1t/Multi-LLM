@@ -19,6 +19,8 @@ from .models import (
     ResearchTask,
     ResponseMetadata,
     ResponseReceipt,
+    ReviewerPackageMetadata,
+    ReviewerPrepareReceipt,
     S1InputReference,
     S1PackageMetadata,
     S1PackagePartMetadata,
@@ -35,6 +37,12 @@ from .models import (
 from .prompts import PromptComposer
 from .provider_catalog import PERPLEXITY_SEARCH_ASSIGNMENT, R0_ASSIGNMENTS, is_approved_provider
 from .synthesis import S1_TEMPLATE_VERSION, SynthesisInput, build_s1_package
+from .reviewer import (
+    REVIEWER_PROVIDERS,
+    REVIEWER_TEMPLATE_VERSION,
+    ReviewerS1Reference,
+    build_reviewer_package,
+)
 from .workflow import (
     ResearchDomainError,
     RoundManager,
@@ -354,9 +362,9 @@ class ResearchRepository:
             phase = Phase(row["phase"])
             if phase == Phase.DRAFT:
                 raise ResearchDomainError("INVALID_PHASE", "Start the session before advancing")
-            if phase == Phase.COMPARISON:
+            if phase == Phase.CRITIQUE:
                 raise ResearchDomainError(
-                    "NOT_IMPLEMENTED", "The reviewer stage will be enabled in P1.0.5C"
+                    "NOT_IMPLEMENTED", "All three current reviews prepare data for S2; P1.0.5C does not start S2"
                 )
             task_sql = "SELECT status, gap_reason FROM research_tasks WHERE session_id = ? AND phase = ?"
             task_parameters: list[object] = [str(session_id), phase.value]
@@ -393,8 +401,10 @@ class ResearchRepository:
                     self._create_s1_task_and_package(
                         connection, row, round_id, now, gap_reason=combined_gap
                     )
+                elif target == Phase.CRITIQUE:
+                    self._create_reviewer_tasks_and_packages(connection, row, round_id, now)
                 for task_ordinal, template in enumerate(
-                    [] if target == Phase.COMPARISON else RoundManager.templates_for(target)
+                    [] if target in {Phase.COMPARISON, Phase.CRITIQUE} else RoundManager.templates_for(target)
                 ):
                     task_id = str(uuid4())
                     connection.execute(
@@ -520,6 +530,125 @@ class ResearchRepository:
             ).fetchone()
         if not row:
             raise ResearchDomainError("NOT_FOUND", "S1 package part was not found")
+        return str(row["prompt_text"])
+
+    def prepare_reviewers(
+        self,
+        session_id: UUID | str,
+        *,
+        expected_revision: int,
+        idempotency_key: str,
+    ) -> ReviewerPrepareReceipt:
+        payload = {"session_id": str(session_id), "expected_revision": expected_revision}
+        with self._transaction() as connection:
+            repeated = self._idempotent_result(
+                connection, "review.package.prepare", idempotency_key, payload
+            )
+            if repeated:
+                return ReviewerPrepareReceipt(
+                    packages=self._current_reviewer_packages(connection, session_id),
+                    session=repeated,
+                )
+            session = self._locked_session(connection, session_id, expected_revision)
+            if (Phase(session["phase"]) != Phase.CRITIQUE
+                    or SessionStatus(session["status"]) != SessionStatus.ACTIVE):
+                raise ResearchDomainError(
+                    "INVALID_PHASE", "Reviewer packages can only be prepared in the active review phase"
+                )
+            s1 = self._current_s1_reference(connection, session)
+            existing = self._reviewer_packages_for_s1(
+                connection, session_id, s1.result_id, s1.result_version
+            )
+            if len(existing) == len(REVIEWER_PROVIDERS):
+                current = self._session(session)
+                self._store_idempotency(
+                    connection, "review.package.prepare", idempotency_key, payload, current
+                )
+                return ReviewerPrepareReceipt(packages=existing, session=current)
+            now = _timestamp()
+            connection.execute(
+                """UPDATE research_tasks SET status = ?, revision = revision + 1, updated_at = ?
+                   WHERE session_id = ? AND phase = ? AND kind = ? AND status != ?""",
+                (TaskStatus.STALE.value, now, str(session_id), Phase.CRITIQUE.value,
+                 TaskKind.S1_REVIEW.value, TaskStatus.STALE.value),
+            )
+            ordinal = connection.execute(
+                "SELECT COALESCE(MAX(ordinal), 0) + 1 FROM research_rounds WHERE session_id = ?",
+                (str(session_id),),
+            ).fetchone()[0]
+            round_id = str(uuid4())
+            connection.execute(
+                "INSERT INTO research_rounds VALUES (?, ?, ?, ?, ?, ?)",
+                (round_id, str(session_id), Phase.CRITIQUE.value, ordinal, "ACTIVE", now),
+            )
+            self._create_reviewer_tasks_and_packages(connection, session, round_id, now, s1=s1)
+            updated = self._update_session(
+                connection, session, phase=Phase.CRITIQUE, status=SessionStatus.ACTIVE,
+                gap_reason=session["gap_reason"], now=now,
+            )
+            packages = self._reviewer_packages_for_s1(
+                connection, session_id, s1.result_id, s1.result_version
+            )
+            self._event(
+                connection, str(session_id), "review.packages_prepared", round_id,
+                updated.revision, now,
+            )
+            self._store_idempotency(
+                connection, "review.package.prepare", idempotency_key, payload, updated
+            )
+            return ReviewerPrepareReceipt(packages=packages, session=updated)
+
+    def get_reviewer_packages(self, session_id: UUID | str) -> list[ReviewerPackageMetadata]:
+        with closing(self._connection()) as connection:
+            rows = connection.execute(
+                """SELECT package_id FROM reviewer_packages WHERE session_id = ?
+                   ORDER BY created_at,
+                     CASE provider_id WHEN 'deepseek' THEN 0 WHEN 'grok' THEN 1 ELSE 2 END""",
+                (str(session_id),),
+            ).fetchall()
+            return [self._get_reviewer_package(connection, row["package_id"]) for row in rows]
+
+    def get_reviewer_part_chunk(
+        self,
+        session_id: UUID | str,
+        package_id: UUID | str,
+        *,
+        part_index: int,
+        offset: int,
+        limit: int,
+    ) -> tuple[bytes, int]:
+        if part_index < 0 or offset < 0 or not 1 <= limit <= MAX_CHUNK_BYTES:
+            raise ResearchDomainError("BAD_REQUEST", "Invalid reviewer package part range")
+        with closing(self._connection()) as connection:
+            row = connection.execute(
+                """SELECT substr(CAST(p.prompt_text AS BLOB), ? + 1, ?) AS content,
+                          length(CAST(p.prompt_text AS BLOB)) AS total_bytes
+                   FROM reviewer_package_parts rp
+                   JOIN reviewer_packages r ON r.package_id = rp.package_id
+                   JOIN prompt_artifacts p ON p.prompt_id = rp.prompt_id
+                   WHERE rp.package_id = ? AND rp.part_index = ? AND r.session_id = ?""",
+                (offset, limit, str(package_id), part_index, str(session_id)),
+            ).fetchone()
+        if not row:
+            raise ResearchDomainError("NOT_FOUND", "Reviewer package part was not found")
+        total = row["total_bytes"]
+        if offset > total:
+            raise ResearchDomainError("BAD_REQUEST", "Reviewer package part offset exceeds content size")
+        return bytes(row["content"]), total
+
+    def get_reviewer_part_text(
+        self, session_id: UUID | str, package_id: UUID | str, part_index: int
+    ) -> str:
+        with closing(self._connection()) as connection:
+            row = connection.execute(
+                """SELECT p.prompt_text FROM reviewer_package_parts rp
+                   JOIN reviewer_packages r ON r.package_id = rp.package_id
+                   JOIN prompt_artifacts p ON p.prompt_id = rp.prompt_id
+                   WHERE rp.package_id = ? AND rp.part_index = ? AND r.session_id = ?""",
+                (str(package_id), part_index, str(session_id)),
+            ).fetchone()
+        if not row:
+            raise ResearchDomainError("NOT_FOUND", "Reviewer package part was not found")
         return str(row["prompt_text"])
 
     def _create_s1_task_and_package(
@@ -685,6 +814,199 @@ class ResearchRepository:
                 part_index=item["part_index"], prompt_id=item["prompt_id"],
                 size_bytes=item["size_bytes"], sha256=item["sha256"],
             ) for item in part_rows],
+            created_at=row["created_at"],
+        )
+
+    def _current_s1_reference(
+        self, connection: sqlite3.Connection, session: sqlite3.Row
+    ) -> ReviewerS1Reference:
+        row = connection.execute(
+            """SELECT r.result_id, r.current_revision, v.sha256, v.response_text,
+                      l.package_id, p.input_fingerprint, t.status
+               FROM research_tasks t
+               JOIN research_results r ON r.task_id = t.task_id
+               JOIN response_revisions v
+                 ON v.result_id = r.result_id AND v.version = r.current_revision
+               JOIN s1_result_links l ON l.result_id = r.result_id
+               JOIN s1_packages p ON p.package_id = l.package_id
+               WHERE t.session_id = ? AND t.kind = ?
+               ORDER BY t.created_at DESC LIMIT 1""",
+            (session["session_id"], TaskKind.S1_SYNTHESIS.value),
+        ).fetchone()
+        if not row or TaskStatus(row["status"]) != TaskStatus.RECEIVED:
+            raise ResearchDomainError(
+                "INVALID_PHASE", "A saved S1 revision linked to its package is required"
+            )
+        package = self._get_s1_package(connection, session["session_id"])
+        if str(package.package_id) != row["package_id"] or package.stale:
+            raise ResearchDomainError(
+                "STALE_REVISION", "S1 or its source package is stale; prepare a current S1 first",
+                retryable=True,
+            )
+        return ReviewerS1Reference(
+            result_id=row["result_id"], result_version=row["current_revision"],
+            sha256=row["sha256"], package_id=row["package_id"],
+            package_fingerprint=row["input_fingerprint"], text=row["response_text"],
+        )
+
+    @staticmethod
+    def _reviewer_inputs(
+        connection: sqlite3.Connection, s1_package_id: str
+    ) -> list[SynthesisInput]:
+        rows = connection.execute(
+            """SELECT i.*, v.response_text
+               FROM s1_package_inputs i
+               LEFT JOIN response_revisions v
+                 ON v.result_id = i.result_id AND v.version = i.result_version
+               WHERE i.package_id = ? ORDER BY i.ordinal""",
+            (s1_package_id,),
+        ).fetchall()
+        if not rows:
+            raise ResearchDomainError("INVALID_PHASE", "S1 package has no immutable source manifest")
+        if any(row["result_id"] and row["response_text"] is None for row in rows):
+            raise ResearchDomainError(
+                "INVALID_PHASE", "An immutable S1 source revision is unavailable"
+            )
+        return [SynthesisInput(
+            ordinal=row["ordinal"], provider_id=row["provider_id"],
+            reported_model=row["reported_model"], task_id=row["task_id"],
+            status=row["status"], result_id=row["result_id"],
+            result_version=row["result_version"], sha256=row["sha256"],
+            gap_reason=row["gap_reason"], text=row["response_text"],
+        ) for row in rows]
+
+    def _create_reviewer_tasks_and_packages(
+        self,
+        connection: sqlite3.Connection,
+        session: sqlite3.Row,
+        round_id: str,
+        now: str,
+        *,
+        s1: ReviewerS1Reference | None = None,
+    ) -> None:
+        s1 = s1 or self._current_s1_reference(connection, session)
+        existing = self._reviewer_packages_for_s1(
+            connection, session["session_id"], s1.result_id, s1.result_version
+        )
+        if existing:
+            if len(existing) != len(REVIEWER_PROVIDERS):
+                raise ResearchDomainError("DATABASE_ERROR", "Reviewer package set is incomplete")
+            return
+        inputs = self._reviewer_inputs(connection, s1.package_id)
+        package = build_reviewer_package(session["question"], s1, inputs)
+        for ordinal, provider_id in enumerate(REVIEWER_PROVIDERS):
+            task_id = str(uuid4())
+            connection.execute(
+                """INSERT INTO research_tasks VALUES (
+                    ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, 0, ?, ?
+                )""",
+                (task_id, session["session_id"], round_id, Phase.CRITIQUE.value,
+                 TaskKind.S1_REVIEW.value, provider_id, "s1_reviewer", ordinal,
+                 TaskStatus.PROMPT_READY.value, now, now),
+            )
+            package_id = str(uuid4())
+            connection.execute(
+                """INSERT INTO reviewer_packages VALUES (
+                    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+                )""",
+                (package_id, session["session_id"], task_id, provider_id,
+                 REVIEWER_TEMPLATE_VERSION, s1.result_id, s1.result_version,
+                 s1.package_id, s1.package_fingerprint, package.input_fingerprint,
+                 package.package_sha256, package.total_bytes, len(package.parts),
+                 int(package.r0_complete), now),
+            )
+            for item in inputs:
+                connection.execute(
+                    "INSERT INTO reviewer_package_inputs VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (package_id, item.ordinal, item.provider_id, item.reported_model,
+                     item.task_id, item.status, item.result_id, item.result_version,
+                     item.sha256, item.gap_reason),
+                )
+            for part_index, content in enumerate(package.parts):
+                artifact = PromptComposer.verbatim(UUID(task_id), content, version=part_index + 1)
+                connection.execute(
+                    "INSERT INTO prompt_artifacts VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    (str(artifact.prompt_id), task_id, artifact.version, artifact.content,
+                     artifact.size_bytes, artifact.sha256, artifact.created_at.isoformat()),
+                )
+                connection.execute(
+                    "INSERT INTO reviewer_package_parts VALUES (?, ?, ?, ?, ?)",
+                    (package_id, part_index, str(artifact.prompt_id),
+                     artifact.size_bytes, artifact.sha256),
+                )
+
+    def _reviewer_packages_for_s1(
+        self,
+        connection: sqlite3.Connection,
+        session_id: UUID | str,
+        result_id: str,
+        result_version: int,
+    ) -> list[ReviewerPackageMetadata]:
+        rows = connection.execute(
+            """SELECT package_id FROM reviewer_packages
+               WHERE session_id = ? AND s1_result_id = ? AND s1_result_version = ?
+               ORDER BY CASE provider_id WHEN 'deepseek' THEN 0 WHEN 'grok' THEN 1 ELSE 2 END""",
+            (str(session_id), result_id, result_version),
+        ).fetchall()
+        return [self._get_reviewer_package(connection, row["package_id"]) for row in rows]
+
+    def _current_reviewer_packages(
+        self, connection: sqlite3.Connection, session_id: UUID | str
+    ) -> list[ReviewerPackageMetadata]:
+        session = connection.execute(
+            "SELECT * FROM research_sessions WHERE session_id = ?", (str(session_id),)
+        ).fetchone()
+        if not session:
+            raise ResearchDomainError("NOT_FOUND", "Research session was not found")
+        s1 = self._current_s1_reference(connection, session)
+        return self._reviewer_packages_for_s1(
+            connection, session_id, s1.result_id, s1.result_version
+        )
+
+    def _get_reviewer_package(
+        self, connection: sqlite3.Connection, package_id: UUID | str
+    ) -> ReviewerPackageMetadata:
+        row = connection.execute(
+            "SELECT * FROM reviewer_packages WHERE package_id = ?", (str(package_id),)
+        ).fetchone()
+        if not row:
+            raise ResearchDomainError("NOT_FOUND", "Reviewer package was not found")
+        inputs = connection.execute(
+            "SELECT * FROM reviewer_package_inputs WHERE package_id = ? ORDER BY ordinal",
+            (str(package_id),),
+        ).fetchall()
+        parts = connection.execute(
+            "SELECT * FROM reviewer_package_parts WHERE package_id = ? ORDER BY part_index",
+            (str(package_id),),
+        ).fetchall()
+        current = connection.execute(
+            "SELECT current_revision FROM research_results WHERE result_id = ?",
+            (row["s1_result_id"],),
+        ).fetchone()
+        stale = not current or current["current_revision"] != row["s1_result_version"]
+        if not stale:
+            s1_package = self._get_s1_package(connection, row["session_id"])
+            stale = str(s1_package.package_id) != row["s1_package_id"] or s1_package.stale
+        return ReviewerPackageMetadata(
+            package_id=row["package_id"], session_id=row["session_id"],
+            task_id=row["task_id"], provider_id=row["provider_id"],
+            template_version=row["template_version"], s1_result_id=row["s1_result_id"],
+            s1_result_version=row["s1_result_version"], s1_package_id=row["s1_package_id"],
+            s1_package_fingerprint=row["s1_package_fingerprint"],
+            input_fingerprint=row["input_fingerprint"], package_sha256=row["package_sha256"],
+            total_bytes=row["total_bytes"], part_count=row["part_count"],
+            r0_complete=bool(row["r0_complete"]), stale=stale,
+            inputs=[S1InputReference(
+                ordinal=item["ordinal"], provider_id=item["provider_id"],
+                reported_model=item["reported_model"], task_id=item["task_id"],
+                status=item["status"], result_id=item["result_id"],
+                result_version=item["result_version"], sha256=item["sha256"],
+                gap_reason=item["gap_reason"],
+            ) for item in inputs],
+            parts=[S1PackagePartMetadata(
+                part_index=item["part_index"], prompt_id=item["prompt_id"],
+                size_bytes=item["size_bytes"], sha256=item["sha256"],
+            ) for item in parts],
             created_at=row["created_at"],
         )
 
@@ -990,6 +1312,25 @@ class ResearchRepository:
                     "INSERT OR IGNORE INTO s1_result_links VALUES (?, ?)",
                     (result_id, package["package_id"]),
                 )
+                if upload["mode"] == "revise" and Phase(session["phase"]) == Phase.CRITIQUE:
+                    connection.execute(
+                        """UPDATE research_tasks
+                           SET status = ?, revision = revision + 1, updated_at = ?
+                           WHERE session_id = ? AND phase = ? AND kind = ? AND status != ?""",
+                        (TaskStatus.STALE.value, now, session["session_id"], Phase.CRITIQUE.value,
+                         TaskKind.S1_REVIEW.value, TaskStatus.STALE.value),
+                    )
+            elif TaskKind(task["kind"]) == TaskKind.S1_REVIEW:
+                package = connection.execute(
+                    "SELECT package_id FROM reviewer_packages WHERE task_id = ?",
+                    (upload["task_id"],),
+                ).fetchone()
+                if not package:
+                    raise ResearchDomainError("INVALID_PHASE", "Reviewer task has no prepared package")
+                connection.execute(
+                    "INSERT OR IGNORE INTO reviewer_result_links VALUES (?, ?)",
+                    (result_id, package["package_id"]),
+                )
             if upload["mode"] == "create":
                 current = TaskStatus(task["status"])
                 if current == TaskStatus.PROMPT_READY:
@@ -1140,8 +1481,8 @@ class ResearchRepository:
             raise ResearchDomainError("NOT_FOUND", "Independent research task was not found")
         return task
 
-    @staticmethod
     def _active_response_task(
+        self,
         connection: sqlite3.Connection, session: sqlite3.Row, task_id: UUID | str
     ) -> sqlite3.Row:
         if SessionStatus(session["status"]) != SessionStatus.ACTIVE:
@@ -1153,14 +1494,29 @@ class ResearchRepository:
         ).fetchone()
         if not task:
             raise ResearchDomainError("NOT_FOUND", "Active research task was not found")
-        if Phase(task["phase"]) != phase:
+        kind = TaskKind(task["kind"])
+        prior_s1_revision = (
+            phase == Phase.CRITIQUE and kind == TaskKind.S1_SYNTHESIS
+            and Phase(task["phase"]) == Phase.COMPARISON
+        )
+        if Phase(task["phase"]) != phase and not prior_s1_revision:
             raise ResearchDomainError("INVALID_PHASE", "Task is not part of the active phase")
         allowed = {
             Phase.INDEPENDENT: {TaskKind.INDEPENDENT_RESPONSE, TaskKind.SEARCH_EVIDENCE},
             Phase.COMPARISON: {TaskKind.S1_SYNTHESIS},
+            Phase.CRITIQUE: {TaskKind.S1_SYNTHESIS, TaskKind.S1_REVIEW},
         }
-        if TaskKind(task["kind"]) not in allowed.get(phase, set()):
+        if kind not in allowed.get(phase, set()):
             raise ResearchDomainError("INVALID_PHASE", "Task cannot accept a manual response")
+        if kind == TaskKind.S1_REVIEW:
+            package = connection.execute(
+                "SELECT package_id FROM reviewer_packages WHERE task_id = ?", (str(task_id),)
+            ).fetchone()
+            if not package or self._get_reviewer_package(connection, package["package_id"]).stale:
+                raise ResearchDomainError(
+                    "STALE_REVISION", "Reviewer package is stale; prepare packages for the current S1",
+                    retryable=True,
+                )
         return task
 
     @staticmethod

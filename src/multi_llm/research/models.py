@@ -50,6 +50,7 @@ class TaskKind(StrEnum):
     INDEPENDENT_RESPONSE = "INDEPENDENT_RESPONSE"
     SEARCH_EVIDENCE = "SEARCH_EVIDENCE"
     S1_SYNTHESIS = "S1_SYNTHESIS"
+    S1_REVIEW = "S1_REVIEW"
     STRUCTURAL_COMPARISON = "STRUCTURAL_COMPARISON"
     CRITIQUE = "CRITIQUE"
     FACT_CHECK = "FACT_CHECK"
@@ -228,4 +229,34 @@ class S1PrepareReceipt(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     package: S1PackageMetadata
+    session: ResearchSession
+
+
+class ReviewerPackageMetadata(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    package_id: UUID
+    session_id: UUID
+    task_id: UUID
+    provider_id: NonEmptyText
+    template_version: int = Field(ge=1)
+    s1_result_id: UUID
+    s1_result_version: int = Field(ge=1)
+    s1_package_id: UUID
+    s1_package_fingerprint: str = Field(pattern=r"^[a-f0-9]{64}$")
+    input_fingerprint: str = Field(pattern=r"^[a-f0-9]{64}$")
+    package_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
+    total_bytes: int = Field(ge=1)
+    part_count: int = Field(ge=1)
+    r0_complete: bool
+    stale: bool = False
+    inputs: list[S1InputReference]
+    parts: list[S1PackagePartMetadata]
+    created_at: datetime
+
+
+class ReviewerPrepareReceipt(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    packages: list[ReviewerPackageMetadata]
     session: ResearchSession

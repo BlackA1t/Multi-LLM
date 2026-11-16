@@ -37,6 +37,10 @@ const REQUIRED_OPERATIONS = [
   "s1.package.get",
   "s1.package.part.chunk",
   "s1.package.part.copy",
+  "review.package.prepare",
+  "review.package.list",
+  "review.package.part.chunk",
+  "review.package.part.copy",
 ];
 
 export class BridgeFailure extends Error {

@@ -10,6 +10,7 @@ from .models import (
     Assignment, PromptMetadata, ResearchSession, ResearchTask, ResponseMetadata,
     ResponseReceipt, SessionStatus, SessionSummary, TaskStatus, UploadPartReceipt,
     UploadReservation, S1PackageMetadata, S1PrepareReceipt,
+    ReviewerPackageMetadata, ReviewerPrepareReceipt,
 )
 from .repository import MAX_CHUNK_BYTES, ResearchRepository
 from .provider_catalog import R0_ASSIGNMENTS
@@ -158,6 +159,49 @@ class ResearchSessionService:
                 retryable=True,
             )
         text = self.repository.get_s1_part_text(session_id, package_id, part_index)
+        self.clipboard_writer(text)
+        return package
+
+    def prepare_reviewers(
+        self,
+        session_id: UUID | str,
+        *,
+        expected_revision: int,
+        idempotency_key: str,
+    ) -> ReviewerPrepareReceipt:
+        return self.repository.prepare_reviewers(
+            session_id, expected_revision=expected_revision, idempotency_key=idempotency_key
+        )
+
+    def reviewer_packages(self, session_id: UUID | str) -> list[ReviewerPackageMetadata]:
+        return self.repository.get_reviewer_packages(session_id)
+
+    def reviewer_part_chunk(
+        self,
+        session_id: UUID | str,
+        package_id: UUID | str,
+        *,
+        part_index: int,
+        offset: int,
+        limit: int,
+    ) -> tuple[bytes, int]:
+        return self.repository.get_reviewer_part_chunk(
+            session_id, package_id, part_index=part_index, offset=offset, limit=limit
+        )
+
+    def copy_reviewer_part(
+        self, session_id: UUID | str, package_id: UUID | str, part_index: int
+    ) -> ReviewerPackageMetadata:
+        packages = self.repository.get_reviewer_packages(session_id)
+        package = next((item for item in packages if str(item.package_id) == str(package_id)), None)
+        if not package:
+            raise ResearchDomainError("NOT_FOUND", "Reviewer package was not found")
+        if package.stale:
+            raise ResearchDomainError(
+                "STALE_REVISION", "Reviewer package is stale; prepare packages for the current S1",
+                retryable=True,
+            )
+        text = self.repository.get_reviewer_part_text(session_id, package_id, part_index)
         self.clipboard_writer(text)
         return package
 

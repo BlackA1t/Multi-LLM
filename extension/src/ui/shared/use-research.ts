@@ -283,6 +283,18 @@ export function useResearch() {
     loadS1Part: (packageId: string, partIndex: number, sizeBytes: number) => session
       ? controller.s1PartText(session.session_id, packageId, partIndex, sizeBytes)
       : Promise.reject(new Error("No session")),
+    prepareReviewers: () => session
+      ? taskAction(() => controller.prepareReviewers(session))
+      : Promise.reject(new Error("No session")),
+    loadReviewerPackages: () => session
+      ? controller.reviewerPackages(session.session_id)
+      : Promise.reject(new Error("No session")),
+    copyReviewerPart: (packageId: string, partIndex: number) => session
+      ? taskAction(() => controller.copyReviewerPart(session.session_id, packageId, partIndex))
+      : Promise.reject(new Error("No session")),
+    loadReviewerPart: (packageId: string, partIndex: number, sizeBytes: number) => session
+      ? controller.reviewerPartText(session.session_id, packageId, partIndex, sizeBytes)
+      : Promise.reject(new Error("No session")),
     clearActive,
   };
 }

@@ -169,6 +169,7 @@ export interface ResponseReceipt {
 export interface S1InputReference {
   ordinal: number;
   provider_id: string;
+  reported_model: string | null;
   task_id: string;
   status: TaskStatus;
   result_id: string | null;
@@ -202,6 +203,32 @@ export interface S1PackageMetadata {
 
 export interface S1PrepareReceipt {
   package: S1PackageMetadata;
+  session: ResearchSession;
+}
+
+export interface ReviewerPackageMetadata {
+  package_id: string;
+  session_id: string;
+  task_id: string;
+  provider_id: string;
+  template_version: number;
+  s1_result_id: string;
+  s1_result_version: number;
+  s1_package_id: string;
+  s1_package_fingerprint: string;
+  input_fingerprint: string;
+  package_sha256: string;
+  total_bytes: number;
+  part_count: number;
+  r0_complete: boolean;
+  stale: boolean;
+  inputs: S1InputReference[];
+  parts: S1PackagePartMetadata[];
+  created_at: string;
+}
+
+export interface ReviewerPrepareReceipt {
+  packages: ReviewerPackageMetadata[];
   session: ResearchSession;
 }
 
@@ -373,4 +400,25 @@ export function isS1PackageMetadata(value: unknown): value is S1PackageMetadata 
 
 export function isS1PrepareReceipt(value: unknown): value is S1PrepareReceipt {
   return isRecord(value) && isS1PackageMetadata(value.package) && isResearchSession(value.session);
+}
+
+export function isReviewerPackageMetadata(value: unknown): value is ReviewerPackageMetadata {
+  return isRecord(value) && isS1PackageMetadata({
+    ...value,
+    r0_complete: value.r0_complete,
+  })
+    && typeof value.provider_id === "string"
+    && typeof value.s1_result_id === "string"
+    && Number.isInteger(value.s1_result_version)
+    && typeof value.s1_package_id === "string"
+    && typeof value.s1_package_fingerprint === "string";
+}
+
+export function isReviewerPackageList(value: unknown): value is { items: ReviewerPackageMetadata[] } {
+  return isRecord(value) && Array.isArray(value.items) && value.items.every(isReviewerPackageMetadata);
+}
+
+export function isReviewerPrepareReceipt(value: unknown): value is ReviewerPrepareReceipt {
+  return isRecord(value) && Array.isArray(value.packages)
+    && value.packages.every(isReviewerPackageMetadata) && isResearchSession(value.session);
 }
