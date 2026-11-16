@@ -56,6 +56,21 @@ def success(response: dict[str, Any]) -> dict[str, Any]:
     return response["result"]
 
 
+def start_host(host: Path, environment: dict[str, str]) -> subprocess.Popen[bytes]:
+    return subprocess.Popen(
+        [str(host)], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE, env=environment,
+    )
+
+
+def stop_host(process: subprocess.Popen[bytes]) -> None:
+    assert process.stdin is not None and process.stdout is not None and process.stderr is not None
+    process.stdin.close()
+    return_code = process.wait(timeout=10)
+    if return_code != 0 or process.stdout.read() or process.stderr.read():
+        raise RuntimeError("Native Host stdio channels were not clean")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Synthetic Native Messaging stdio acceptance probe")
     parser.add_argument("--host-exe", required=True, type=Path)
@@ -64,17 +79,11 @@ def main() -> int:
     if not host.is_file() or host.suffix.lower() != ".exe":
         raise SystemExit("Host launcher must be an existing .exe")
 
-    with tempfile.TemporaryDirectory(prefix="multi-llm-p104-") as directory:
-        database = Path(directory) / "research.db"
+    with tempfile.TemporaryDirectory(prefix="multi-llm-p106-") as directory:
+        database = Path(directory) / "research-v2.db"
         environment = os.environ.copy()
         environment["MULTI_LLM_RESEARCH_DB"] = str(database.resolve())
-        process = subprocess.Popen(
-            [str(host)],
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            env=environment,
-        )
+        process = start_host(host, environment)
         try:
             hello = success(request(process, "system.hello", {}))
             if hello.get("protocol_version") != 1:
@@ -169,8 +178,33 @@ def main() -> int:
                     raise RuntimeError("Lost-ACK commit retry did not return the durable receipt")
                 last_receipt = receipt
 
+            search_task = search_tasks[0]
+            current = success(request(process, "session.get", {"session_id": session_id}))
+            search_payload = (
+                "# Synthetic Perplexity evidence\n\n"
+                "Unicode: 研究 🚀\n<script>quoted untrusted text</script>"
+            ).encode("utf-8")
+            search_digest = hashlib.sha256(search_payload).hexdigest()
+            search_key = str(uuid4())
+            search_upload = success(request(process, "response.upload.begin", {
+                "session_id": session_id, "task_id": search_task["task_id"], "mode": "create",
+                "size_bytes": len(search_payload), "sha256": search_digest,
+                "expected_revision": current["revision"], "idempotency_key": search_key,
+            }))
+            success(request(process, "response.upload.part", {
+                "upload_id": search_upload["upload_id"], "part_index": 0,
+                "chunk_b64": base64.b64encode(search_payload).decode("ascii"),
+                "sha256": search_digest,
+            }))
+            success(request(process, "response.upload.commit", {
+                "upload_id": search_upload["upload_id"], "session_id": session_id,
+                "task_id": search_task["task_id"], "source_type": "web_manual",
+                "reported_model": "synthetic-search", "expected_revision": current["revision"],
+                "idempotency_key": search_key,
+            }))
+
             responses = success(request(process, "response.list", {"session_id": session_id}))
-            if len(responses.get("items", [])) != 8 or last_receipt is None:
+            if len(responses.get("items", [])) != 9 or last_receipt is None:
                 raise RuntimeError("Confirmed responses are missing from response.list")
             response_part = success(request(process, "response.chunk", {
                 "session_id": session_id, "result_id": last_receipt["response"]["result_id"],
@@ -178,6 +212,14 @@ def main() -> int:
             }))
             if not base64.b64decode(response_part["chunk_b64"], validate=True):
                 raise RuntimeError("Confirmed response chunk is empty")
+
+            stop_host(process)
+            process = start_host(host, environment)
+            restored_midway = success(request(process, "session.get", {"session_id": session_id}))
+            restored_tasks = success(request(process, "task.list", {"session_id": session_id}))["items"]
+            if (restored_midway.get("phase") != "R0"
+                    or len([item for item in restored_tasks if item.get("status") == "RECEIVED"]) != 9):
+                raise RuntimeError("Intermediate Host restart did not restore the R0 state")
             current = success(request(process, "session.get", {"session_id": session_id}))
             advanced = success(request(process, "session.advance", {
                 "session_id": session_id, "expected_revision": current["revision"],
@@ -312,14 +354,16 @@ def main() -> int:
             if completed.get("phase") != "DONE" or completed.get("status") != "COMPLETED":
                 raise RuntimeError("S2 import did not complete the research session")
 
-            assert process.stdin is not None
-            process.stdin.close()
-            return_code = process.wait(timeout=10)
-            assert process.stdout is not None and process.stderr is not None
-            trailing_stdout = process.stdout.read()
-            stderr = process.stderr.read()
-            if return_code != 0 or trailing_stdout or stderr:
-                raise RuntimeError("Native Host stdio channels were not clean")
+            stop_host(process)
+            process = start_host(host, environment)
+            restored_done = success(request(process, "session.get", {"session_id": session_id}))
+            restored_responses = success(request(process, "response.list", {"session_id": session_id}))["items"]
+            restored_s2 = success(request(process, "s2.package.get", {"session_id": session_id}))
+            if (restored_done.get("phase") != "DONE" or restored_done.get("status") != "COMPLETED"
+                    or len(restored_responses) != 14 or restored_s2.get("package_id") != s2_package["package_id"]
+                    or restored_s2.get("part_count") != s2_package["part_count"]):
+                raise RuntimeError("Final Host restart did not restore the complete research history")
+            stop_host(process)
         finally:
             if process.poll() is None:
                 process.kill()
@@ -331,7 +375,7 @@ def main() -> int:
         "operations_checked": 35,
         "tasks_created": 14,
         "initial_advance_gate": "INVALID_PHASE",
-        "confirmed_responses": 8,
+        "confirmed_responses": 9,
         "final_phase": "DONE",
         "s1_package_parts": package["part_count"],
         "s1_import": "RECEIVED",
@@ -341,6 +385,8 @@ def main() -> int:
         "s2_import": "COMPLETED",
         "legacy_pipeline": "REMOVED",
         "durable_receipt_retry": "PASS",
+        "intermediate_restart": "PASS",
+        "final_restart": "PASS",
         "stdout_framing": "clean",
         "stderr": "empty",
     }, ensure_ascii=False))

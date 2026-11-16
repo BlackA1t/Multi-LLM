@@ -11,8 +11,8 @@ def main() -> int:
     local_app_data = os.environ.get("LOCALAPPDATA")
     if not local_app_data:
         raise SystemExit("LOCALAPPDATA is unavailable")
-    default_source = Path(local_app_data) / "Multi-LLM" / "research.db"
-    parser = argparse.ArgumentParser(description="Create a consistent read-only backup before P1.0.4 migration")
+    default_source = Path(local_app_data) / "Multi-LLM" / "research-v2.db"
+    parser = argparse.ArgumentParser(description="Create a consistent read-only backup of research-v2.db")
     parser.add_argument("--source", type=Path, default=default_source)
     parser.add_argument("--destination", type=Path)
     args = parser.parse_args()
@@ -21,7 +21,7 @@ def main() -> int:
         raise SystemExit("Research database does not exist")
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     destination = (args.destination or (
-        Path(local_app_data) / "Multi-LLM" / "Backups" / f"research-p104-{timestamp}.db"
+        Path(local_app_data) / "Multi-LLM" / "Backups" / f"research-v2-{timestamp}.db"
     )).resolve()
     if destination.exists():
         raise SystemExit("Backup destination already exists")
