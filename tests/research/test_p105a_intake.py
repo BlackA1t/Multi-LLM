@@ -36,7 +36,7 @@ def test_fixed_eight_r0_receive_the_exact_same_prompt(tmp_path):
     tasks = service.list_tasks(started.session_id)
     assert len(tasks) == 8
     assert [task.provider_id for task in tasks] == [item.provider_id for item in R0_ASSIGNMENTS]
-    assert {task.kind for task in tasks} == {TaskKind.INDEPENDENT_RESPONSE}
+    assert {task.kind for task in tasks} == {TaskKind.R0_RESPONSE}
     artifacts = [service.repository.get_prompt_text(started.session_id, task.task_id) for task in tasks]
     assert artifacts == [prompt] * 8
     assert len({service.prompt_metadata(started.session_id, task.task_id).sha256 for task in tasks}) == 1
@@ -51,7 +51,7 @@ def test_optional_perplexity_is_separate_and_does_not_block_r0(tmp_path):
         created.session_id, expected_revision=0, idempotency_key="start"
     )
     tasks = service.list_tasks(started.session_id)
-    mandatory = [task for task in tasks if task.kind == TaskKind.INDEPENDENT_RESPONSE]
+    mandatory = [task for task in tasks if task.kind == TaskKind.R0_RESPONSE]
     search = [task for task in tasks if task.kind == TaskKind.SEARCH_EVIDENCE]
     assert len(mandatory) == 8
     assert len(search) == 1 and search[0].provider_id == "perplexity"
@@ -62,7 +62,7 @@ def test_optional_perplexity_is_separate_and_does_not_block_r0(tmp_path):
     advanced = service.advance(
         started.session_id, expected_revision=current.revision, idempotency_key="advance"
     )
-    assert advanced.phase == Phase.COMPARISON
+    assert advanced.phase == Phase.S1
     assert service.list_tasks(started.session_id)[-1].status == TaskStatus.PROMPT_READY
 
 

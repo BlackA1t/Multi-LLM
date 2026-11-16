@@ -23,8 +23,8 @@ const task: ResearchTask = {
   task_id: "223e4567-e89b-42d3-a456-426614174000",
   session_id: session.session_id,
   round_id: "323e4567-e89b-42d3-a456-426614174000",
-  phase: "INDEPENDENT",
-  kind: "INDEPENDENT_RESPONSE",
+  phase: "R0",
+  kind: "R0_RESPONSE",
   provider_id: "gemini",
   role: "independent_gemini",
   ordinal: 0,
@@ -53,6 +53,10 @@ const taskTools = (onImport = vi.fn().mockResolvedValue(undefined)) => ({
   onLoadReviewerPackages: vi.fn().mockResolvedValue([]),
   onCopyReviewerPart: vi.fn().mockResolvedValue(undefined),
   onLoadReviewerPart: vi.fn().mockResolvedValue("stored reviewer part"),
+  onPrepareS2: vi.fn().mockResolvedValue(undefined),
+  onLoadS2Package: vi.fn().mockRejectedValue(new Error("not used")),
+  onCopyS2Part: vi.fn().mockResolvedValue(undefined),
+  onLoadS2Part: vi.fn().mockResolvedValue("stored S2 part"),
 });
 
 describe("UI safety and feedback", () => {
@@ -90,7 +94,7 @@ describe("UI safety and feedback", () => {
   it("keeps pasted response volatile until explicit preview and confirmation", async () => {
     const user = userEvent.setup();
     const onImport = vi.fn().mockResolvedValue(undefined);
-    render(<TaskList tasks={[task]} phase="INDEPENDENT" tools={taskTools(onImport)} />);
+    render(<TaskList tasks={[task]} phase="R0" tools={taskTools(onImport)} />);
     await user.click(screen.getByRole("button", { name: "Импорт ответа" }));
     const textarea = screen.getByLabelText("Текст из официального веб-чата");
     await user.type(textarea, "Синтетический ответ");
@@ -107,7 +111,7 @@ describe("UI safety and feedback", () => {
   it("blocks an empty manual response", async () => {
     const user = userEvent.setup();
     const onImport = vi.fn();
-    render(<TaskList tasks={[task]} phase="INDEPENDENT" tools={taskTools(onImport)} />);
+    render(<TaskList tasks={[task]} phase="R0" tools={taskTools(onImport)} />);
     await user.click(screen.getByRole("button", { name: "Импорт ответа" }));
     expect(screen.getByRole("button", { name: "Перейти к проверке" })).toBeDisabled();
     expect(onImport).not.toHaveBeenCalled();
@@ -116,7 +120,7 @@ describe("UI safety and feedback", () => {
   it("shows numbered S1 package parts and copy progress", async () => {
     const user = userEvent.setup();
     const s1Task: ResearchTask = {
-      ...task, phase: "COMPARISON", kind: "S1_SYNTHESIS", provider_id: "chatgpt",
+      ...task, phase: "S1", kind: "S1_SYNTHESIS", provider_id: "chatgpt",
       role: "s1_synthesizer",
     };
     const tools = taskTools();
@@ -138,7 +142,7 @@ describe("UI safety and feedback", () => {
       ],
       created_at: session.created_at,
     });
-    render(<TaskList tasks={[s1Task]} phase="COMPARISON" tools={tools} />);
+    render(<TaskList tasks={[s1Task]} phase="S1" tools={tools} />);
     await user.click(screen.getByRole("button", { name: "Показать пакет S1" }));
     expect(screen.getByRole("status")).toHaveTextContent("0/2");
     expect(screen.getByText(/Часть 1\/2/)).toBeVisible();
@@ -151,7 +155,7 @@ describe("UI safety and feedback", () => {
   it("shows independent reviewer progress and sequential package copy", async () => {
     const user = userEvent.setup();
     const reviewer: ResearchTask = {
-      ...task, phase: "CRITIQUE", kind: "S1_REVIEW", provider_id: "deepseek",
+      ...task, phase: "S1_REVIEW", kind: "S1_REVIEW", provider_id: "deepseek",
       role: "s1_reviewer",
     };
     const tools = taskTools();
@@ -178,7 +182,7 @@ describe("UI safety and feedback", () => {
       ],
       created_at: session.created_at,
     }]);
-    render(<TaskList tasks={[reviewer]} phase="CRITIQUE" tools={tools} />);
+    render(<TaskList tasks={[reviewer]} phase="S1_REVIEW" tools={tools} />);
     expect(screen.getByText("Независимая проверка S1: 0/3")).toBeVisible();
     await user.click(screen.getByRole("button", { name: "Показать пакеты" }));
     expect(screen.getByRole("status")).toHaveTextContent("0/2");
@@ -193,7 +197,7 @@ describe("UI safety and feedback", () => {
     const staleTasks: ResearchTask[] = ["deepseek", "grok", "gemini"].map((providerId, index) => ({
       ...task,
       task_id: `${index + 7}23e4567-e89b-42d3-a456-426614174000`,
-      phase: "CRITIQUE",
+      phase: "S1_REVIEW",
       kind: "S1_REVIEW",
       provider_id: providerId,
       role: "s1_reviewer",
@@ -211,8 +215,47 @@ describe("UI safety and feedback", () => {
       sha256: "f".repeat(64),
       created_at: session.created_at,
     }));
-    render(<TaskList tasks={staleTasks} phase="CRITIQUE" tools={tools} />);
+    render(<TaskList tasks={staleTasks} phase="S1_REVIEW" tools={tools} />);
     expect(screen.getByText("Независимая проверка S1: 0/3")).toBeVisible();
     expect(screen.queryByText("Независимая проверка S1: 3/3")).not.toBeInTheDocument();
+  });
+
+  it("shows S2 provenance, context warning, and sequential copy progress", async () => {
+    const user = userEvent.setup();
+    const s2Task: ResearchTask = {
+      ...task, phase: "S2", kind: "S2_SYNTHESIS", provider_id: "chatgpt",
+      role: "s2_finalizer",
+    };
+    const tools = taskTools();
+    tools.onLoadS2Package.mockResolvedValue({
+      package_id: "823e4567-e89b-42d3-a456-426614174000",
+      session_id: session.session_id,
+      task_id: s2Task.task_id,
+      template_version: 1,
+      s1_result_id: "923e4567-e89b-42d3-a456-426614174000",
+      s1_result_version: 2,
+      s1_package_id: "a23e4567-e89b-42d3-a456-426614174000",
+      input_fingerprint: "a".repeat(64),
+      package_sha256: "b".repeat(64),
+      total_bytes: 5_000_000,
+      part_count: 2,
+      r0_complete: false,
+      stale: false,
+      context_warning: true,
+      reviews: [], inputs: [],
+      parts: [
+        { part_index: 0, prompt_id: "s20", size_bytes: 500_000, sha256: "c".repeat(64) },
+        { part_index: 1, prompt_id: "s21", size_bytes: 400_000, sha256: "d".repeat(64) },
+      ],
+      created_at: session.created_at,
+    });
+    render(<TaskList tasks={[s2Task]} phase="S2" tools={tools} />);
+    await user.click(screen.getByRole("button", { name: "Показать пакет S2" }));
+    expect(screen.getByText(/S1 v2 · 3\/3 рецензий · Частичный R0/)).toBeVisible();
+    expect(screen.getByRole("alert")).toHaveTextContent("деление на части не гарантирует");
+    expect(screen.getByRole("status")).toHaveTextContent("0/2");
+    await user.click(screen.getAllByRole("button", { name: "Копировать" })[0]);
+    expect(tools.onCopyS2Part).toHaveBeenCalledWith("823e4567-e89b-42d3-a456-426614174000", 0);
+    expect(screen.getByRole("status")).toHaveTextContent("1/2");
   });
 });

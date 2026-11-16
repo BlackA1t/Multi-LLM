@@ -38,6 +38,10 @@ export function ResearchApp({ mode }: { mode: "sidepanel" | "workspace" }) {
     onLoadReviewerPackages: research.loadReviewerPackages,
     onCopyReviewerPart: research.copyReviewerPart,
     onLoadReviewerPart: research.loadReviewerPart,
+    onPrepareS2: research.prepareS2,
+    onLoadS2Package: research.loadS2Package,
+    onCopyS2Part: research.copyS2Part,
+    onLoadS2Part: research.loadS2Part,
   };
   const actions = research.session ? <SessionActions
     session={research.session}

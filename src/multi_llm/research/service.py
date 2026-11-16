@@ -11,6 +11,7 @@ from .models import (
     ResponseReceipt, SessionStatus, SessionSummary, TaskStatus, UploadPartReceipt,
     UploadReservation, S1PackageMetadata, S1PrepareReceipt,
     ReviewerPackageMetadata, ReviewerPrepareReceipt,
+    S2PackageMetadata, S2PrepareReceipt,
 )
 from .repository import MAX_CHUNK_BYTES, ResearchRepository
 from .provider_catalog import R0_ASSIGNMENTS
@@ -203,6 +204,24 @@ class ResearchSessionService:
             )
         text = self.repository.get_reviewer_part_text(session_id, package_id, part_index)
         self.clipboard_writer(text)
+        return package
+
+    def prepare_s2(self, session_id: UUID | str, *, expected_revision: int, idempotency_key: str) -> S2PrepareReceipt:
+        return self.repository.prepare_s2(session_id, expected_revision=expected_revision, idempotency_key=idempotency_key)
+
+    def s2_package(self, session_id: UUID | str) -> S2PackageMetadata:
+        return self.repository.get_s2_package(session_id)
+
+    def s2_part_chunk(self, session_id: UUID | str, package_id: UUID | str, *, part_index: int, offset: int, limit: int) -> tuple[bytes, int]:
+        return self.repository.get_s2_part_chunk(session_id, package_id, part_index=part_index, offset=offset, limit=limit)
+
+    def copy_s2_part(self, session_id: UUID | str, package_id: UUID | str, part_index: int) -> S2PackageMetadata:
+        package = self.repository.get_s2_package(session_id)
+        if str(package.package_id) != str(package_id):
+            raise ResearchDomainError("NOT_FOUND", "S2 package was not found")
+        if package.stale:
+            raise ResearchDomainError("STALE_REVISION", "S2 package inputs changed; prepare a current package", retryable=True)
+        self.clipboard_writer(self.repository.get_s2_part_text(session_id, package_id, part_index))
         return package
 
     def list_tasks(self, session_id: UUID | str) -> list[ResearchTask]:

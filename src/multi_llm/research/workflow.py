@@ -1,8 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
-
-from .models import Phase, SessionStatus, TaskKind, TaskStatus
+from .models import Phase, SessionStatus, TaskStatus
 
 
 class ResearchDomainError(Exception):
@@ -19,12 +17,10 @@ class StaleRevisionError(ResearchDomainError):
 
 PHASE_ORDER = (
     Phase.DRAFT,
-    Phase.INDEPENDENT,
-    Phase.COMPARISON,
-    Phase.CRITIQUE,
-    Phase.FACT_CHECK,
-    Phase.ARBITRATION,
-    Phase.REVIEW,
+    Phase.R0,
+    Phase.S1,
+    Phase.S1_REVIEW,
+    Phase.S2,
     Phase.DONE,
 )
 
@@ -82,30 +78,8 @@ def require_task_transition(current: TaskStatus, target: TaskStatus, gap_reason:
         raise ResearchDomainError("BAD_REQUEST", "A gap reason is required for unavailable or skipped work")
 
 
-@dataclass(frozen=True)
-class TaskTemplate:
-    kind: TaskKind
-    role: str
-    provider_id: str | None = None
-
-
 class RoundManager:
-    """Fixed deep-research workflow; no fast/standard/deep mode switch exists."""
-
-    @staticmethod
-    def templates_for(phase: Phase) -> list[TaskTemplate]:
-        templates = {
-            Phase.COMPARISON: [TaskTemplate(TaskKind.S1_SYNTHESIS, "s1_synthesizer", "chatgpt")],
-            Phase.CRITIQUE: [
-                TaskTemplate(TaskKind.S1_REVIEW, "s1_reviewer", "deepseek"),
-                TaskTemplate(TaskKind.S1_REVIEW, "s1_reviewer", "grok"),
-                TaskTemplate(TaskKind.S1_REVIEW, "s1_reviewer", "gemini"),
-            ],
-            Phase.FACT_CHECK: [TaskTemplate(TaskKind.FACT_CHECK, "fact_checker", "perplexity")],
-            Phase.ARBITRATION: [TaskTemplate(TaskKind.ARBITRATION, "arbiter", "chatgpt")],
-            Phase.REVIEW: [TaskTemplate(TaskKind.REVIEW, "user_review", "user")],
-        }
-        return templates.get(phase, [])
+    """Single supported research workflow: R0 → S1 → S1 review → S2."""
 
     @staticmethod
     def validate_gate(
@@ -114,7 +88,7 @@ class RoundManager:
         gap_reason: str | None,
         task_gap_reasons: list[str | None] | None = None,
     ) -> bool:
-        if phase == Phase.INDEPENDENT:
+        if phase == Phase.R0:
             received = statuses.count(TaskStatus.RECEIVED)
             if len(statuses) == 8 and received == 8:
                 return False

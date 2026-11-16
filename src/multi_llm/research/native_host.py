@@ -32,7 +32,7 @@ def _database_path() -> Path:
         base = Path(local_app_data).expanduser()
         if not base.is_absolute() or base == Path(base.anchor):
             raise RuntimeError("LOCALAPPDATA is invalid for the research database")
-        path = base / "Multi-LLM" / "research.db"
+        path = base / "Multi-LLM" / "research-v2.db"
     path.parent.mkdir(parents=True, exist_ok=True)
     return path
 

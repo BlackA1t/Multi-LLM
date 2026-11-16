@@ -21,8 +21,8 @@ const task: ResearchTask = {
   task_id: "223e4567-e89b-42d3-a456-426614174000",
   session_id: session.session_id,
   round_id: "323e4567-e89b-42d3-a456-426614174000",
-  phase: "INDEPENDENT",
-  kind: "INDEPENDENT_RESPONSE",
+  phase: "R0",
+  kind: "R0_RESPONSE",
   provider_id: "gemini",
   role: "independent_gemini",
   ordinal: 0,
@@ -66,7 +66,7 @@ describe("SessionController", () => {
   });
 
   it("chunks a long response and retries a lost commit ACK with the same logical mutation", async () => {
-    const active = { ...session, phase: "INDEPENDENT" as const };
+    const active = { ...session, phase: "R0" as const };
     const text = "🚀".repeat(9_000);
     const controller = new SessionController();
     sendMessage

@@ -48,7 +48,7 @@ def _started(tmp_path, *, perplexity_prompt=None):
 def _complete_r0(service, session_id, *, shared=False):
     tasks = [
         task for task in service.list_tasks(session_id)
-        if task.kind == TaskKind.INDEPENDENT_RESPONSE
+        if task.kind == TaskKind.R0_RESPONSE
     ]
     receipts = []
     for index, task in enumerate(tasks):
@@ -79,7 +79,7 @@ def test_s1_package_contains_fixed_order_full_text_and_provenance(tmp_path):
     tasks, receipts = _complete_r0(service, session.session_id, shared=True)
     advanced = _advance_s1(service, session.session_id)
     package = service.s1_package(session.session_id)
-    assert advanced.phase == Phase.COMPARISON
+    assert advanced.phase == Phase.S1
     assert package.template_version == 1
     assert package.r0_complete is True and package.stale is False
     assert [item.provider_id for item in package.inputs] == [item.provider_id for item in R0_ASSIGNMENTS]
@@ -127,7 +127,7 @@ def test_perplexity_absent_received_and_unfinished_are_distinct(tmp_path):
 
 def test_partial_r0_is_explicit_and_invalid_incomplete_r0_is_rejected(tmp_path):
     service, session = _started(tmp_path)
-    tasks = [task for task in service.list_tasks(session.session_id) if task.kind == TaskKind.INDEPENDENT_RESPONSE]
+    tasks = [task for task in service.list_tasks(session.session_id) if task.kind == TaskKind.R0_RESPONSE]
     for index, task in enumerate(tasks[:7]):
         _upload(service, session.session_id, task, f"answer {index}", f"answer-{index}")
     current = service.get(session.session_id)
@@ -200,7 +200,7 @@ def test_prepare_is_idempotent_s1_import_is_versioned_linked_and_persistent(tmp_
         session.session_id, expected_revision=restarted.get(session.session_id).revision,
         idempotency_key="review-stage",
     )
-    assert review.phase == Phase.CRITIQUE
+    assert review.phase == Phase.S1_REVIEW
     assert [task.provider_id for task in restarted.list_tasks(session.session_id)
             if task.kind == TaskKind.S1_REVIEW] == ["deepseek", "grok", "gemini"]
 

@@ -21,6 +21,9 @@ from .models import (
     ResponseReceipt,
     ReviewerPackageMetadata,
     ReviewerPrepareReceipt,
+    S2PackageMetadata,
+    S2PrepareReceipt,
+    S2ReviewReference,
     S1InputReference,
     S1PackageMetadata,
     S1PackagePartMetadata,
@@ -42,6 +45,13 @@ from .reviewer import (
     REVIEWER_TEMPLATE_VERSION,
     ReviewerS1Reference,
     build_reviewer_package,
+)
+from .finalization import (
+    S2_CONTEXT_WARNING_BYTES,
+    S2_REVIEW_PROVIDERS,
+    S2_TEMPLATE_VERSION,
+    S2ReviewInput,
+    build_s2_package,
 )
 from .workflow import (
     ResearchDomainError,
@@ -261,7 +271,7 @@ class ResearchRepository:
             round_id = str(uuid4())
             connection.execute(
                 "INSERT INTO research_rounds VALUES (?, ?, ?, 1, ?, ?)",
-                (round_id, str(session_id), Phase.INDEPENDENT.value, "ACTIVE", now),
+                (round_id, str(session_id), Phase.R0.value, "ACTIVE", now),
             )
             for ordinal, assignment in enumerate(assignments):
                 connection.execute(
@@ -273,7 +283,7 @@ class ResearchRepository:
                     """INSERT INTO research_tasks VALUES (
                         ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, 0, ?, ?
                     )""",
-                    (task_id, str(session_id), round_id, Phase.INDEPENDENT.value, "INDEPENDENT_RESPONSE",
+                    (task_id, str(session_id), round_id, Phase.R0.value, "R0_RESPONSE",
                      assignment.provider_id, assignment.role, ordinal, TaskStatus.PROMPT_READY.value, now, now),
                 )
                 artifact = PromptComposer.verbatim(UUID(task_id), row["question"])
@@ -296,7 +306,7 @@ class ResearchRepository:
                     """INSERT INTO research_tasks VALUES (
                         ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, 0, ?, ?
                     )""",
-                    (task_id, str(session_id), round_id, Phase.INDEPENDENT.value,
+                    (task_id, str(session_id), round_id, Phase.R0.value,
                      TaskKind.SEARCH_EVIDENCE.value, assignment.provider_id, assignment.role,
                      ordinal, TaskStatus.PROMPT_READY.value, now, now),
                 )
@@ -309,7 +319,7 @@ class ResearchRepository:
                      artifact.size_bytes, artifact.sha256, artifact.created_at.isoformat()),
                 )
             updated = self._update_session(
-                connection, row, phase=Phase.INDEPENDENT, status=SessionStatus.ACTIVE, gap_reason=None, now=now
+                connection, row, phase=Phase.R0, status=SessionStatus.ACTIVE, gap_reason=None, now=now
             )
             self._event(connection, str(session_id), "session.started", round_id, updated.revision, now)
             self._store_idempotency(connection, "session.start", idempotency_key, payload, updated)
@@ -362,15 +372,15 @@ class ResearchRepository:
             phase = Phase(row["phase"])
             if phase == Phase.DRAFT:
                 raise ResearchDomainError("INVALID_PHASE", "Start the session before advancing")
-            if phase == Phase.CRITIQUE:
+            if phase == Phase.S2:
                 raise ResearchDomainError(
-                    "NOT_IMPLEMENTED", "All three current reviews prepare data for S2; P1.0.5C does not start S2"
+                    "INVALID_PHASE", "Import a valid S2 to complete the research"
                 )
             task_sql = "SELECT status, gap_reason FROM research_tasks WHERE session_id = ? AND phase = ?"
             task_parameters: list[object] = [str(session_id), phase.value]
-            if phase == Phase.INDEPENDENT:
+            if phase == Phase.R0:
                 task_sql += " AND kind = ?"
-                task_parameters.append(TaskKind.INDEPENDENT_RESPONSE.value)
+                task_parameters.append(TaskKind.R0_RESPONSE.value)
             task_rows = connection.execute(task_sql + " ORDER BY ordinal", task_parameters).fetchall()
             has_gap = RoundManager.validate_gate(
                 phase,
@@ -397,29 +407,14 @@ class ResearchRepository:
                     "INSERT INTO research_rounds VALUES (?, ?, ?, ?, ?, ?)",
                     (round_id, str(session_id), target.value, ordinal, "ACTIVE", now),
                 )
-                if target == Phase.COMPARISON:
+                if target == Phase.S1:
                     self._create_s1_task_and_package(
                         connection, row, round_id, now, gap_reason=combined_gap
                     )
-                elif target == Phase.CRITIQUE:
+                elif target == Phase.S1_REVIEW:
                     self._create_reviewer_tasks_and_packages(connection, row, round_id, now)
-                for task_ordinal, template in enumerate(
-                    [] if target in {Phase.COMPARISON, Phase.CRITIQUE} else RoundManager.templates_for(target)
-                ):
-                    task_id = str(uuid4())
-                    connection.execute(
-                        """INSERT INTO research_tasks VALUES (
-                            ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, 0, ?, ?
-                        )""",
-                        (task_id, str(session_id), round_id, target.value, template.kind.value,
-                         template.provider_id, template.role, task_ordinal, TaskStatus.PROMPT_READY.value, now, now),
-                    )
-                    artifact = PromptComposer.phase(UUID(task_id), target, template.role)
-                    connection.execute(
-                        "INSERT INTO prompt_artifacts VALUES (?, ?, ?, ?, ?, ?, ?)",
-                        (str(artifact.prompt_id), task_id, artifact.version, artifact.content,
-                         artifact.size_bytes, artifact.sha256, artifact.created_at.isoformat()),
-                    )
+                elif target == Phase.S2:
+                    self._create_s2_task_and_package(connection, row, round_id, now)
             updated = self._update_session(
                 connection, row, phase=target, status=target_status, gap_reason=combined_gap, now=now
             )
@@ -444,7 +439,7 @@ class ResearchRepository:
                     package=self._get_s1_package(connection, session_id), session=repeated
                 )
             session = self._locked_session(connection, session_id, expected_revision)
-            if (Phase(session["phase"]) != Phase.COMPARISON
+            if (Phase(session["phase"]) != Phase.S1
                     or SessionStatus(session["status"]) != SessionStatus.ACTIVE):
                 raise ResearchDomainError(
                     "INVALID_PHASE", "S1 can only be prepared in the active S1 phase"
@@ -462,7 +457,7 @@ class ResearchRepository:
             round_row = connection.execute(
                 """SELECT round_id FROM research_rounds
                    WHERE session_id = ? AND phase = ? ORDER BY ordinal DESC LIMIT 1""",
-                (str(session_id), Phase.COMPARISON.value),
+                (str(session_id), Phase.S1.value),
             ).fetchone()
             if not round_row:
                 raise ResearchDomainError("NOT_FOUND", "S1 round was not found")
@@ -472,7 +467,7 @@ class ResearchRepository:
             )
             now = _timestamp()
             updated = self._update_session(
-                connection, session, phase=Phase.COMPARISON,
+                connection, session, phase=Phase.S1,
                 status=SessionStatus.ACTIVE, gap_reason=session["gap_reason"], now=now,
             )
             package = self._get_s1_package(connection, session_id)
@@ -550,10 +545,10 @@ class ResearchRepository:
                     session=repeated,
                 )
             session = self._locked_session(connection, session_id, expected_revision)
-            if (Phase(session["phase"]) != Phase.CRITIQUE
+            if (Phase(session["phase"]) not in {Phase.S1_REVIEW, Phase.S2}
                     or SessionStatus(session["status"]) != SessionStatus.ACTIVE):
                 raise ResearchDomainError(
-                    "INVALID_PHASE", "Reviewer packages can only be prepared in the active review phase"
+                    "INVALID_PHASE", "Reviewer packages require an active review or S2 recovery phase"
                 )
             s1 = self._current_s1_reference(connection, session)
             existing = self._reviewer_packages_for_s1(
@@ -569,7 +564,7 @@ class ResearchRepository:
             connection.execute(
                 """UPDATE research_tasks SET status = ?, revision = revision + 1, updated_at = ?
                    WHERE session_id = ? AND phase = ? AND kind = ? AND status != ?""",
-                (TaskStatus.STALE.value, now, str(session_id), Phase.CRITIQUE.value,
+                (TaskStatus.STALE.value, now, str(session_id), Phase.S1_REVIEW.value,
                  TaskKind.S1_REVIEW.value, TaskStatus.STALE.value),
             )
             ordinal = connection.execute(
@@ -579,11 +574,11 @@ class ResearchRepository:
             round_id = str(uuid4())
             connection.execute(
                 "INSERT INTO research_rounds VALUES (?, ?, ?, ?, ?, ?)",
-                (round_id, str(session_id), Phase.CRITIQUE.value, ordinal, "ACTIVE", now),
+                (round_id, str(session_id), Phase.S1_REVIEW.value, ordinal, "ACTIVE", now),
             )
             self._create_reviewer_tasks_and_packages(connection, session, round_id, now, s1=s1)
             updated = self._update_session(
-                connection, session, phase=Phase.CRITIQUE, status=SessionStatus.ACTIVE,
+                connection, session, phase=Phase.S1_REVIEW, status=SessionStatus.ACTIVE,
                 gap_reason=session["gap_reason"], now=now,
             )
             packages = self._reviewer_packages_for_s1(
@@ -676,7 +671,7 @@ class ResearchRepository:
             """INSERT INTO research_tasks VALUES (
                 ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, 0, ?, ?
             )""",
-            (task_id, session["session_id"], round_id, Phase.COMPARISON.value,
+            (task_id, session["session_id"], round_id, Phase.S1.value,
              TaskKind.S1_SYNTHESIS.value, "chatgpt", "s1_synthesizer", task_ordinal,
              TaskStatus.PROMPT_READY.value, now, now),
         )
@@ -721,8 +716,8 @@ class ResearchRepository:
                  ON v.result_id = r.result_id AND v.version = r.current_revision
                WHERE t.session_id = ? AND t.phase = ? AND t.kind = ?
                ORDER BY t.ordinal""",
-            (session["session_id"], Phase.INDEPENDENT.value,
-             TaskKind.INDEPENDENT_RESPONSE.value),
+            (session["session_id"], Phase.R0.value,
+             TaskKind.R0_RESPONSE.value),
         ).fetchall()
         expected = [item.provider_id for item in R0_ASSIGNMENTS]
         if [row["provider_id"] for row in rows] != expected:
@@ -730,7 +725,7 @@ class ResearchRepository:
                 "INVALID_PHASE", "S1 requires the fixed ordered set of eight R0 providers"
             )
         RoundManager.validate_gate(
-            Phase.INDEPENDENT,
+            Phase.R0,
             [TaskStatus(row["status"]) for row in rows],
             gap_reason if gap_reason is not None else session["gap_reason"],
             [row["gap_reason"] for row in rows],
@@ -761,7 +756,7 @@ class ResearchRepository:
                LEFT JOIN response_revisions v
                  ON v.result_id = r.result_id AND v.version = r.current_revision
                WHERE t.session_id = ? AND t.phase = ? AND t.kind = ? LIMIT 1""",
-            (session["session_id"], Phase.INDEPENDENT.value, TaskKind.SEARCH_EVIDENCE.value),
+            (session["session_id"], Phase.R0.value, TaskKind.SEARCH_EVIDENCE.value),
         ).fetchone()
         if search:
             inputs.append(SynthesisInput(
@@ -900,7 +895,7 @@ class ResearchRepository:
                 """INSERT INTO research_tasks VALUES (
                     ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, 0, ?, ?
                 )""",
-                (task_id, session["session_id"], round_id, Phase.CRITIQUE.value,
+                (task_id, session["session_id"], round_id, Phase.S1_REVIEW.value,
                  TaskKind.S1_REVIEW.value, provider_id, "s1_reviewer", ordinal,
                  TaskStatus.PROMPT_READY.value, now, now),
             )
@@ -1007,6 +1002,163 @@ class ResearchRepository:
                 part_index=item["part_index"], prompt_id=item["prompt_id"],
                 size_bytes=item["size_bytes"], sha256=item["sha256"],
             ) for item in parts],
+            created_at=row["created_at"],
+        )
+
+    def prepare_s2(self, session_id: UUID | str, *, expected_revision: int, idempotency_key: str) -> S2PrepareReceipt:
+        payload = {"session_id": str(session_id), "expected_revision": expected_revision}
+        with self._transaction() as connection:
+            repeated = self._idempotent_result(connection, "s2.package.prepare", idempotency_key, payload)
+            if repeated:
+                return S2PrepareReceipt(package=self._get_s2_package(connection, session_id), session=repeated)
+            session = self._locked_session(connection, session_id, expected_revision)
+            if Phase(session["phase"]) != Phase.S2 or SessionStatus(session["status"]) != SessionStatus.ACTIVE:
+                raise ResearchDomainError("INVALID_PHASE", "S2 package requires the active S2 phase")
+            package_row = connection.execute("SELECT package_id FROM s2_packages WHERE session_id = ? ORDER BY created_at DESC LIMIT 1", (str(session_id),)).fetchone()
+            current_package = self._get_s2_package(connection, session_id) if package_row else None
+            if not current_package or current_package.stale:
+                if current_package:
+                    connection.execute("UPDATE research_tasks SET status = ?, revision = revision + 1, updated_at = ? WHERE task_id = ?",
+                                       (TaskStatus.STALE.value, _timestamp(), str(current_package.task_id)))
+                ordinal = connection.execute("SELECT COALESCE(MAX(ordinal), 0) + 1 FROM research_rounds WHERE session_id = ?", (str(session_id),)).fetchone()[0]
+                round_id = str(uuid4())
+                connection.execute("INSERT INTO research_rounds VALUES (?, ?, ?, ?, ?, ?)",
+                                   (round_id, str(session_id), Phase.S2.value, ordinal, "ACTIVE", _timestamp()))
+                self._create_s2_task_and_package(connection, session, round_id, _timestamp())
+            current = self._session(session)
+            self._store_idempotency(connection, "s2.package.prepare", idempotency_key, payload, current)
+            return S2PrepareReceipt(package=self._get_s2_package(connection, session_id), session=current)
+
+    def get_s2_package(self, session_id: UUID | str) -> S2PackageMetadata:
+        with closing(self._connection()) as connection:
+            return self._get_s2_package(connection, session_id)
+
+    def get_s2_part_chunk(self, session_id: UUID | str, package_id: UUID | str, *, part_index: int, offset: int, limit: int) -> tuple[bytes, int]:
+        if part_index < 0 or offset < 0 or not 1 <= limit <= MAX_CHUNK_BYTES:
+            raise ResearchDomainError("BAD_REQUEST", "Invalid S2 package part range")
+        with closing(self._connection()) as connection:
+            row = connection.execute(
+                """SELECT substr(CAST(p.prompt_text AS BLOB), ? + 1, ?) content,
+                          length(CAST(p.prompt_text AS BLOB)) total_bytes
+                   FROM s2_package_parts sp JOIN s2_packages s ON s.package_id = sp.package_id
+                   JOIN prompt_artifacts p ON p.prompt_id = sp.prompt_id
+                   WHERE sp.package_id = ? AND sp.part_index = ? AND s.session_id = ?""",
+                (offset, limit, str(package_id), part_index, str(session_id)),
+            ).fetchone()
+        if not row:
+            raise ResearchDomainError("NOT_FOUND", "S2 package part was not found")
+        if offset > row["total_bytes"]:
+            raise ResearchDomainError("BAD_REQUEST", "S2 package part offset exceeds content size")
+        return bytes(row["content"]), row["total_bytes"]
+
+    def get_s2_part_text(self, session_id: UUID | str, package_id: UUID | str, part_index: int) -> str:
+        with closing(self._connection()) as connection:
+            row = connection.execute(
+                """SELECT p.prompt_text FROM s2_package_parts sp
+                   JOIN s2_packages s ON s.package_id = sp.package_id
+                   JOIN prompt_artifacts p ON p.prompt_id = sp.prompt_id
+                   WHERE sp.package_id = ? AND sp.part_index = ? AND s.session_id = ?""",
+                (str(package_id), part_index, str(session_id)),
+            ).fetchone()
+        if not row:
+            raise ResearchDomainError("NOT_FOUND", "S2 package part was not found")
+        return str(row["prompt_text"])
+
+    def _current_review_inputs(self, connection: sqlite3.Connection, session: sqlite3.Row, s1: ReviewerS1Reference) -> list[S2ReviewInput]:
+        rows = connection.execute(
+            """SELECT t.ordinal, t.provider_id, t.task_id, t.status, r.result_id,
+                      r.current_revision result_version, v.sha256, v.response_text,
+                      l.package_id reviewer_package_id
+               FROM research_tasks t LEFT JOIN research_results r ON r.task_id = t.task_id
+               LEFT JOIN response_revisions v ON v.result_id = r.result_id AND v.version = r.current_revision
+               LEFT JOIN reviewer_result_links l ON l.result_id = r.result_id
+               WHERE t.session_id = ? AND t.phase = ? AND t.kind = ? AND t.status != ?
+               ORDER BY t.ordinal""",
+            (session["session_id"], Phase.S1_REVIEW.value, TaskKind.S1_REVIEW.value, TaskStatus.STALE.value),
+        ).fetchall()
+        if [row["provider_id"] for row in rows] != list(S2_REVIEW_PROVIDERS) or any(
+            TaskStatus(row["status"]) != TaskStatus.RECEIVED or not row["result_id"] or not row["response_text"] or not row["reviewer_package_id"] for row in rows
+        ):
+            raise ResearchDomainError("INVALID_PHASE", "S2 requires three current received reviews")
+        for row in rows:
+            package = self._get_reviewer_package(connection, row["reviewer_package_id"])
+            if package.stale or str(package.s1_result_id) != s1.result_id or package.s1_result_version != s1.result_version:
+                raise ResearchDomainError("STALE_REVISION", "A reviewer result does not match the current S1", retryable=True)
+        return [S2ReviewInput(row["ordinal"], row["provider_id"], row["task_id"], row["result_id"],
+                              row["result_version"], row["sha256"], row["reviewer_package_id"], row["response_text"])
+                for row in rows]
+
+    def _create_s2_task_and_package(self, connection: sqlite3.Connection, session: sqlite3.Row, round_id: str, now: str) -> None:
+        s1 = self._current_s1_reference(connection, session)
+        reviews = self._current_review_inputs(connection, session, s1)
+        inputs = self._reviewer_inputs(connection, s1.package_id)
+        package = build_s2_package(session["question"], s1, reviews, inputs)
+        task_id, package_id = str(uuid4()), str(uuid4())
+        connection.execute("""INSERT INTO research_tasks VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, NULL, 0, ?, ?)""",
+            (task_id, session["session_id"], round_id, Phase.S2.value, TaskKind.S2_SYNTHESIS.value,
+             "chatgpt", "s2_finalizer", TaskStatus.PROMPT_READY.value, now, now))
+        connection.execute("INSERT INTO s2_packages VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (package_id, session["session_id"], task_id, S2_TEMPLATE_VERSION, s1.result_id, s1.result_version,
+             s1.package_id, package.input_fingerprint, package.package_sha256, package.total_bytes,
+             len(package.parts), int(package.r0_complete), now))
+        for item in reviews:
+            connection.execute("INSERT INTO s2_package_reviews VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (package_id, item.ordinal, item.provider_id, item.task_id, item.result_id,
+                 item.result_version, item.sha256, item.reviewer_package_id))
+        for item in inputs:
+            connection.execute("INSERT INTO s2_package_inputs VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (package_id, item.ordinal, item.provider_id, item.reported_model, item.task_id, item.status,
+                 item.result_id, item.result_version, item.sha256, item.gap_reason))
+        for index, content in enumerate(package.parts):
+            artifact = PromptComposer.verbatim(UUID(task_id), content, version=index + 1)
+            connection.execute("INSERT INTO prompt_artifacts VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (str(artifact.prompt_id), task_id, artifact.version, artifact.content,
+                 artifact.size_bytes, artifact.sha256, artifact.created_at.isoformat()))
+            connection.execute("INSERT INTO s2_package_parts VALUES (?, ?, ?, ?, ?)",
+                (package_id, index, str(artifact.prompt_id), artifact.size_bytes, artifact.sha256))
+
+    def _get_s2_package(self, connection: sqlite3.Connection, session_id: UUID | str) -> S2PackageMetadata:
+        row = connection.execute("SELECT * FROM s2_packages WHERE session_id = ? ORDER BY created_at DESC LIMIT 1", (str(session_id),)).fetchone()
+        if not row:
+            raise ResearchDomainError("NOT_FOUND", "S2 package has not been prepared")
+        review_rows = connection.execute("SELECT * FROM s2_package_reviews WHERE package_id = ? ORDER BY ordinal", (row["package_id"],)).fetchall()
+        input_rows = connection.execute("SELECT * FROM s2_package_inputs WHERE package_id = ? ORDER BY ordinal", (row["package_id"],)).fetchall()
+        part_rows = connection.execute("SELECT * FROM s2_package_parts WHERE package_id = ? ORDER BY part_index", (row["package_id"],)).fetchall()
+        stale = False
+        current_s1 = connection.execute("SELECT current_revision FROM research_results WHERE result_id = ?", (row["s1_result_id"],)).fetchone()
+        stale = not current_s1 or current_s1[0] != row["s1_result_version"]
+        for review in review_rows:
+            current = connection.execute("SELECT current_revision FROM research_results WHERE result_id = ?", (review["result_id"],)).fetchone()
+            stale = stale or not current or current[0] != review["result_version"]
+        if not stale:
+            session = connection.execute(
+                "SELECT * FROM research_sessions WHERE session_id = ?", (str(session_id),)
+            ).fetchone()
+            try:
+                s1 = self._current_s1_reference(connection, session)
+                current_reviews = self._current_review_inputs(connection, session, s1)
+                fresh = build_s2_package(
+                    session["question"], s1, current_reviews,
+                    self._reviewer_inputs(connection, s1.package_id),
+                )
+                stale = (fresh.input_fingerprint != row["input_fingerprint"]
+                         or fresh.package_sha256 != row["package_sha256"]
+                         or len(fresh.parts) != row["part_count"])
+            except ResearchDomainError:
+                stale = True
+        return S2PackageMetadata(
+            package_id=row["package_id"], session_id=row["session_id"], task_id=row["task_id"],
+            template_version=row["template_version"], s1_result_id=row["s1_result_id"],
+            s1_result_version=row["s1_result_version"], s1_package_id=row["s1_package_id"],
+            input_fingerprint=row["input_fingerprint"], package_sha256=row["package_sha256"],
+            total_bytes=row["total_bytes"], part_count=row["part_count"], r0_complete=bool(row["r0_complete"]),
+            stale=stale, context_warning=row["total_bytes"] >= S2_CONTEXT_WARNING_BYTES,
+            reviews=[S2ReviewReference(**{key: item[key] for key in (
+                "ordinal", "provider_id", "task_id", "result_id", "result_version",
+                "sha256", "reviewer_package_id",
+            )}) for item in review_rows],
+            inputs=[S1InputReference(**{key: item[key] for key in ("ordinal","provider_id","reported_model","task_id","status","result_id","result_version","sha256","gap_reason")}) for item in input_rows],
+            parts=[S1PackagePartMetadata(part_index=item["part_index"], prompt_id=item["prompt_id"], size_bytes=item["size_bytes"], sha256=item["sha256"]) for item in part_rows],
             created_at=row["created_at"],
         )
 
@@ -1312,13 +1464,17 @@ class ResearchRepository:
                     "INSERT OR IGNORE INTO s1_result_links VALUES (?, ?)",
                     (result_id, package["package_id"]),
                 )
-                if upload["mode"] == "revise" and Phase(session["phase"]) == Phase.CRITIQUE:
+                if upload["mode"] == "revise" and Phase(session["phase"]) in {Phase.S1_REVIEW, Phase.S2}:
                     connection.execute(
                         """UPDATE research_tasks
                            SET status = ?, revision = revision + 1, updated_at = ?
                            WHERE session_id = ? AND phase = ? AND kind = ? AND status != ?""",
-                        (TaskStatus.STALE.value, now, session["session_id"], Phase.CRITIQUE.value,
+                        (TaskStatus.STALE.value, now, session["session_id"], Phase.S1_REVIEW.value,
                          TaskKind.S1_REVIEW.value, TaskStatus.STALE.value),
+                    )
+                    connection.execute(
+                        "UPDATE research_tasks SET status = ?, revision = revision + 1, updated_at = ? WHERE session_id = ? AND kind = ? AND status != ?",
+                        (TaskStatus.STALE.value, now, session["session_id"], TaskKind.S2_SYNTHESIS.value, TaskStatus.STALE.value),
                     )
             elif TaskKind(task["kind"]) == TaskKind.S1_REVIEW:
                 package = connection.execute(
@@ -1331,6 +1487,16 @@ class ResearchRepository:
                     "INSERT OR IGNORE INTO reviewer_result_links VALUES (?, ?)",
                     (result_id, package["package_id"]),
                 )
+                if upload["mode"] == "revise" and Phase(session["phase"]) == Phase.S2:
+                    connection.execute(
+                        "UPDATE research_tasks SET status = ?, revision = revision + 1, updated_at = ? WHERE session_id = ? AND kind = ? AND status != ?",
+                        (TaskStatus.STALE.value, now, session["session_id"], TaskKind.S2_SYNTHESIS.value, TaskStatus.STALE.value),
+                    )
+            elif TaskKind(task["kind"]) == TaskKind.S2_SYNTHESIS:
+                package = connection.execute("SELECT package_id FROM s2_packages WHERE task_id = ?", (upload["task_id"],)).fetchone()
+                if not package or self._get_s2_package(connection, session["session_id"]).stale:
+                    raise ResearchDomainError("STALE_REVISION", "S2 package inputs changed", retryable=True)
+                connection.execute("INSERT OR IGNORE INTO s2_result_links VALUES (?, ?)", (result_id, package["package_id"]))
             if upload["mode"] == "create":
                 current = TaskStatus(task["status"])
                 if current == TaskStatus.PROMPT_READY:
@@ -1341,8 +1507,11 @@ class ResearchRepository:
                     "UPDATE research_tasks SET status = ?, gap_reason = NULL, revision = revision + 1, updated_at = ? WHERE task_id = ?",
                     (TaskStatus.RECEIVED.value, now, upload["task_id"]),
                 )
+            completing_s2 = TaskKind(task["kind"]) == TaskKind.S2_SYNTHESIS and upload["mode"] == "create"
             updated = self._update_session(
-                connection, session, phase=Phase(session["phase"]), status=SessionStatus(session["status"]),
+                connection, session, phase=Phase.DONE if completing_s2 else Phase(session["phase"]),
+                status=(SessionStatus.COMPLETED_WITH_GAPS if session["gap_reason"] else SessionStatus.COMPLETED)
+                    if completing_s2 else SessionStatus(session["status"]),
                 gap_reason=session["gap_reason"], now=now,
             )
             self._event(connection, session["session_id"], "response.committed", result_id, updated.revision, now)
@@ -1434,7 +1603,7 @@ class ResearchRepository:
                 raise ResearchDomainError("INVALID_PHASE", "Received task cannot be reassigned")
             duplicate = connection.execute(
                 "SELECT 1 FROM research_tasks WHERE session_id = ? AND phase = ? AND provider_id = ? AND task_id <> ?",
-                (str(session_id), Phase.INDEPENDENT.value, provider_id, str(task_id)),
+                (str(session_id), Phase.R0.value, provider_id, str(task_id)),
             ).fetchone()
             if duplicate:
                 raise ResearchDomainError("BAD_REQUEST", "Provider is already assigned in this round")
@@ -1471,11 +1640,11 @@ class ResearchRepository:
     def _active_independent_task(
         connection: sqlite3.Connection, session: sqlite3.Row, task_id: UUID | str
     ) -> sqlite3.Row:
-        if Phase(session["phase"]) != Phase.INDEPENDENT or SessionStatus(session["status"]) != SessionStatus.ACTIVE:
+        if Phase(session["phase"]) != Phase.R0 or SessionStatus(session["status"]) != SessionStatus.ACTIVE:
             raise ResearchDomainError("INVALID_PHASE", "Operation requires an active independent phase")
         task = connection.execute(
             "SELECT * FROM research_tasks WHERE task_id = ? AND session_id = ? AND phase = ?",
-            (str(task_id), session["session_id"], Phase.INDEPENDENT.value),
+            (str(task_id), session["session_id"], Phase.R0.value),
         ).fetchone()
         if not task:
             raise ResearchDomainError("NOT_FOUND", "Independent research task was not found")
@@ -1485,8 +1654,6 @@ class ResearchRepository:
         self,
         connection: sqlite3.Connection, session: sqlite3.Row, task_id: UUID | str
     ) -> sqlite3.Row:
-        if SessionStatus(session["status"]) != SessionStatus.ACTIVE:
-            raise ResearchDomainError("INVALID_PHASE", "Response import requires an active session")
         phase = Phase(session["phase"])
         task = connection.execute(
             "SELECT * FROM research_tasks WHERE task_id = ? AND session_id = ?",
@@ -1495,16 +1662,22 @@ class ResearchRepository:
         if not task:
             raise ResearchDomainError("NOT_FOUND", "Active research task was not found")
         kind = TaskKind(task["kind"])
+        completed_s2_revision = phase == Phase.DONE and kind == TaskKind.S2_SYNTHESIS
+        if SessionStatus(session["status"]) != SessionStatus.ACTIVE and not completed_s2_revision:
+            raise ResearchDomainError("INVALID_PHASE", "Response import requires an active session")
         prior_s1_revision = (
-            phase == Phase.CRITIQUE and kind == TaskKind.S1_SYNTHESIS
-            and Phase(task["phase"]) == Phase.COMPARISON
+            phase in {Phase.S1_REVIEW, Phase.S2} and kind == TaskKind.S1_SYNTHESIS
+            and Phase(task["phase"]) == Phase.S1
         )
-        if Phase(task["phase"]) != phase and not prior_s1_revision:
+        prior_review_revision = phase == Phase.S2 and kind == TaskKind.S1_REVIEW and Phase(task["phase"]) == Phase.S1_REVIEW
+        if Phase(task["phase"]) != phase and not prior_s1_revision and not prior_review_revision and not completed_s2_revision:
             raise ResearchDomainError("INVALID_PHASE", "Task is not part of the active phase")
         allowed = {
-            Phase.INDEPENDENT: {TaskKind.INDEPENDENT_RESPONSE, TaskKind.SEARCH_EVIDENCE},
-            Phase.COMPARISON: {TaskKind.S1_SYNTHESIS},
-            Phase.CRITIQUE: {TaskKind.S1_SYNTHESIS, TaskKind.S1_REVIEW},
+            Phase.R0: {TaskKind.R0_RESPONSE, TaskKind.SEARCH_EVIDENCE},
+            Phase.S1: {TaskKind.S1_SYNTHESIS},
+            Phase.S1_REVIEW: {TaskKind.S1_SYNTHESIS, TaskKind.S1_REVIEW},
+            Phase.S2: {TaskKind.S1_SYNTHESIS, TaskKind.S1_REVIEW, TaskKind.S2_SYNTHESIS},
+            Phase.DONE: {TaskKind.S2_SYNTHESIS},
         }
         if kind not in allowed.get(phase, set()):
             raise ResearchDomainError("INVALID_PHASE", "Task cannot accept a manual response")

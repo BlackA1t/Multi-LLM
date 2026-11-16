@@ -17,12 +17,10 @@ NonEmptyText = Annotated[str, StringConstraints(strip_whitespace=True, min_lengt
 
 class Phase(StrEnum):
     DRAFT = "DRAFT"
-    INDEPENDENT = "INDEPENDENT"
-    COMPARISON = "COMPARISON"
-    CRITIQUE = "CRITIQUE"
-    FACT_CHECK = "FACT_CHECK"
-    ARBITRATION = "ARBITRATION"
-    REVIEW = "REVIEW"
+    R0 = "R0"
+    S1 = "S1"
+    S1_REVIEW = "S1_REVIEW"
+    S2 = "S2"
     DONE = "DONE"
 
 
@@ -47,15 +45,11 @@ class TaskStatus(StrEnum):
 
 
 class TaskKind(StrEnum):
-    INDEPENDENT_RESPONSE = "INDEPENDENT_RESPONSE"
+    R0_RESPONSE = "R0_RESPONSE"
     SEARCH_EVIDENCE = "SEARCH_EVIDENCE"
     S1_SYNTHESIS = "S1_SYNTHESIS"
     S1_REVIEW = "S1_REVIEW"
-    STRUCTURAL_COMPARISON = "STRUCTURAL_COMPARISON"
-    CRITIQUE = "CRITIQUE"
-    FACT_CHECK = "FACT_CHECK"
-    ARBITRATION = "ARBITRATION"
-    REVIEW = "REVIEW"
+    S2_SYNTHESIS = "S2_SYNTHESIS"
 
 
 class Assignment(BaseModel):
@@ -259,4 +253,43 @@ class ReviewerPrepareReceipt(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     packages: list[ReviewerPackageMetadata]
+    session: ResearchSession
+
+
+class S2ReviewReference(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    ordinal: int = Field(ge=0)
+    provider_id: NonEmptyText
+    task_id: UUID
+    result_id: UUID
+    result_version: int = Field(ge=1)
+    sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
+    reviewer_package_id: UUID
+
+
+class S2PackageMetadata(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    package_id: UUID
+    session_id: UUID
+    task_id: UUID
+    template_version: int = Field(ge=1)
+    s1_result_id: UUID
+    s1_result_version: int = Field(ge=1)
+    s1_package_id: UUID
+    input_fingerprint: str = Field(pattern=r"^[a-f0-9]{64}$")
+    package_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
+    total_bytes: int = Field(ge=1)
+    part_count: int = Field(ge=1)
+    r0_complete: bool
+    stale: bool = False
+    context_warning: bool = False
+    reviews: list[S2ReviewReference]
+    inputs: list[S1InputReference]
+    parts: list[S1PackagePartMetadata]
+    created_at: datetime
+
+
+class S2PrepareReceipt(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    package: S2PackageMetadata
     session: ResearchSession

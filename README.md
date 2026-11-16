@@ -68,9 +68,11 @@ Credential Manager storage использует версионированные
 
 ## Research-session core (P1.0.2)
 
-В `multi_llm.research` реализовано автономное ядро исследовательских сессий с фиксированным маршрутом `DRAFT → INDEPENDENT → COMPARISON → CRITIQUE → FACT_CHECK → ARBITRATION → REVIEW → DONE`. Состояние хранится отдельно от P0.4 в `data/research.db`; включены внешние ключи, WAL, транзакционные мутации, optimistic revision и idempotency keys.
+В `multi_llm.research` реализовано автономное ядро с единственным маршрутом `DRAFT → R0 → S1 → S1_REVIEW → S2 → DONE`. Включены внешние ключи, WAL, транзакционные мутации, optimistic revision, immutable revisions и idempotency keys.
 
-Минимальный Chrome Native Messaging Host запускается entry point `multi-llm-native-host`. Протокол v1 использует JSON-фреймы с нативным 32-битным префиксом длины и поддерживает только `system.hello`, `session.create/get/list/start/pause/resume/advance` и `task.list`. Host не регистрируется автоматически и не выполняет модельные или сетевые вызовы. Chrome UI, clipboard-интеграция и установка FreeLLMAPI в P1.0.2 намеренно отсутствуют.
+Chrome Native Messaging Host запускается entry point `multi-llm-native-host`. IPC v1 использует JSON-фреймы с нативным 32-битным префиксом длины и поддерживает сессии, неизменяемые chunked uploads, S1/reviewer/S2 packages и чтение сохранённых версий. Host не выполняет модельные или сетевые вызовы: пакеты передаются пользователем вручную через официальные веб-чаты.
+
+S2 формируется только после трёх актуальных рецензий DeepSeek, Grok и Gemini. Детерминированный пакет фиксирует версии S1, рецензий, R0 и optional Perplexity, SHA-256 и input fingerprint; части ограничены 512 KiB. Импорт первого действительного S2 переводит сессию в `DONE`, а повторный импорт создаёт новую immutable revision.
 
 ## Chrome Extension (P1.0.3)
 
@@ -95,4 +97,4 @@ $hostExe = (Resolve-Path '.\.venv\Scripts\multi-llm-native-host.exe').Path
 .\scripts\check_native_host.ps1 -ExtensionId $extensionId
 ```
 
-Полная ручная процедура и штатный unregister описаны в `P103_MANUAL_ACCEPTANCE.md`. Native Host по умолчанию использует стабильную базу `%LOCALAPPDATA%\Multi-LLM\research.db`. Для осознанного использования существующей dev-базы задайте абсолютный `MULTI_LLM_RESEARCH_DB`; автоматического переноса данных нет.
+Полная ручная процедура и штатный unregister описаны в `P103_MANUAL_ACCEPTANCE.md`. Native Host использует чистую схему research v2 в `%LOCALAPPDATA%\Multi-LLM\research-v2.db`. Прежний `research.db` не удаляется и не переносится автоматически. Для тестовой базы задайте абсолютный `MULTI_LLM_RESEARCH_DB`.

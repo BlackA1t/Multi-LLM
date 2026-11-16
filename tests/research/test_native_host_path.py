@@ -20,7 +20,7 @@ def test_database_path_uses_stable_local_app_data_across_working_directories(tmp
     monkeypatch.chdir(second_cwd)
     second = _database_path()
 
-    assert first == second == local_app_data.resolve() / "Multi-LLM" / "research.db"
+    assert first == second == local_app_data.resolve() / "Multi-LLM" / "research-v2.db"
     assert first.parent.is_dir()
 
 

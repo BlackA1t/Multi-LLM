@@ -19,6 +19,7 @@ REQUIRED_OPERATIONS = {
     "s1.package.prepare", "s1.package.get", "s1.package.part.chunk", "s1.package.part.copy",
     "review.package.prepare", "review.package.list",
     "review.package.part.chunk", "review.package.part.copy",
+    "s2.package.prepare", "s2.package.get", "s2.package.part.chunk", "s2.package.part.copy",
     "task.prompt.meta", "task.prompt.chunk", "task.prompt.copy", "task.mark_awaiting",
     "response.upload.begin", "response.upload.part", "response.upload.commit",
     "response.upload.abort", "response.list", "response.chunk", "task.mark_unavailable",
@@ -101,7 +102,7 @@ def main() -> int:
                 "idempotency_key": str(uuid4()),
             }))
             tasks = success(request(process, "task.list", {"session_id": session_id}))
-            mandatory_tasks = [item for item in tasks.get("items", []) if item.get("kind") == "INDEPENDENT_RESPONSE"]
+            mandatory_tasks = [item for item in tasks.get("items", []) if item.get("kind") == "R0_RESPONSE"]
             search_tasks = [item for item in tasks.get("items", []) if item.get("kind") == "SEARCH_EVIDENCE"]
             if len(mandatory_tasks) != 8 or len(search_tasks) != 1:
                 raise RuntimeError("session.start did not create eight R0 tasks and one search task")
@@ -123,7 +124,7 @@ def main() -> int:
             if rejected.get("ok") is not False or rejected.get("error", {}).get("code") != "INVALID_PHASE":
                 raise RuntimeError("Incomplete workflow gate was not rejected")
             unchanged = success(request(process, "session.get", {"session_id": session_id}))
-            if unchanged.get("phase") != "INDEPENDENT" or unchanged.get("revision") != resumed["revision"]:
+            if unchanged.get("phase") != "R0" or unchanged.get("revision") != resumed["revision"]:
                 raise RuntimeError("Rejected advance changed the session")
 
             first_task = tasks["items"][0]
@@ -182,7 +183,7 @@ def main() -> int:
                 "session_id": session_id, "expected_revision": current["revision"],
                 "idempotency_key": str(uuid4()),
             }))
-            if advanced.get("phase") != "COMPARISON":
+            if advanced.get("phase") != "S1":
                 raise RuntimeError("Eight confirmed responses did not pass the server gate")
             package = success(request(process, "s1.package.get", {"session_id": session_id}))
             if package.get("part_count", 0) < 1 or len(package.get("inputs", [])) != 9:
@@ -226,7 +227,7 @@ def main() -> int:
                 "session_id": session_id, "expected_revision": current["revision"],
                 "idempotency_key": str(uuid4()),
             }))
-            if review_phase.get("phase") != "CRITIQUE":
+            if review_phase.get("phase") != "S1_REVIEW":
                 raise RuntimeError("Received S1 did not open independent review")
             review_tasks = [item for item in success(request(
                 process, "task.list", {"session_id": session_id}
@@ -268,13 +269,48 @@ def main() -> int:
                 if review_receipt.get("task", {}).get("status") != "RECEIVED":
                     raise RuntimeError("Independent review was not stored")
             current = success(request(process, "session.get", {"session_id": session_id}))
-            no_fact_check = request(process, "session.advance", {
+            s2_phase = success(request(process, "session.advance", {
                 "session_id": session_id, "expected_revision": current["revision"],
                 "idempotency_key": str(uuid4()),
-            })
-            if (no_fact_check.get("ok") is not False
-                    or no_fact_check.get("error", {}).get("code") != "NOT_IMPLEMENTED"):
-                raise RuntimeError("Legacy FACT_CHECK route was not blocked")
+            }))
+            if s2_phase.get("phase") != "S2":
+                raise RuntimeError("Three reviews did not open S2 finalization")
+            s2_package = success(request(process, "s2.package.get", {"session_id": session_id}))
+            if s2_package.get("stale") or len(s2_package.get("reviews", [])) != 3:
+                raise RuntimeError("S2 package provenance is incomplete or stale")
+            s2_chunk = success(request(process, "s2.package.part.chunk", {
+                "session_id": session_id, "package_id": s2_package["package_id"],
+                "part_index": 0, "offset": 0, "limit": 32768,
+            }))
+            if not base64.b64decode(s2_chunk["chunk_b64"], validate=True):
+                raise RuntimeError("S2 package part is empty")
+            s2_task = next((item for item in success(request(
+                process, "task.list", {"session_id": session_id}
+            ))["items"] if item.get("kind") == "S2_SYNTHESIS"), None)
+            if not s2_task:
+                raise RuntimeError("S2 synthesis task is missing")
+            current = success(request(process, "session.get", {"session_id": session_id}))
+            s2_payload = "Синтетический итоговый отчёт S2".encode("utf-8")
+            s2_digest = hashlib.sha256(s2_payload).hexdigest()
+            s2_key = str(uuid4())
+            s2_upload = success(request(process, "response.upload.begin", {
+                "session_id": session_id, "task_id": s2_task["task_id"], "mode": "create",
+                "size_bytes": len(s2_payload), "sha256": s2_digest,
+                "expected_revision": current["revision"], "idempotency_key": s2_key,
+            }))
+            success(request(process, "response.upload.part", {
+                "upload_id": s2_upload["upload_id"], "part_index": 0,
+                "chunk_b64": base64.b64encode(s2_payload).decode("ascii"), "sha256": s2_digest,
+            }))
+            success(request(process, "response.upload.commit", {
+                "upload_id": s2_upload["upload_id"], "session_id": session_id,
+                "task_id": s2_task["task_id"], "source_type": "web_manual",
+                "reported_model": "ChatGPT Plus", "expected_revision": current["revision"],
+                "idempotency_key": s2_key,
+            }))
+            completed = success(request(process, "session.get", {"session_id": session_id}))
+            if completed.get("phase") != "DONE" or completed.get("status") != "COMPLETED":
+                raise RuntimeError("S2 import did not complete the research session")
 
             assert process.stdin is not None
             process.stdin.close()
@@ -292,16 +328,18 @@ def main() -> int:
     print(json.dumps({
         "status": "PASS",
         "protocol_version": 1,
-        "operations_checked": 31,
-        "tasks_created": 13,
+        "operations_checked": 35,
+        "tasks_created": 14,
         "initial_advance_gate": "INVALID_PHASE",
         "confirmed_responses": 8,
-        "final_phase": "CRITIQUE",
+        "final_phase": "DONE",
         "s1_package_parts": package["part_count"],
         "s1_import": "RECEIVED",
         "reviewer_packages": 3,
         "review_imports": 3,
-        "legacy_fact_check": "BLOCKED",
+        "s2_package_parts": s2_package["part_count"],
+        "s2_import": "COMPLETED",
+        "legacy_pipeline": "REMOVED",
         "durable_receipt_retry": "PASS",
         "stdout_framing": "clean",
         "stderr": "empty",

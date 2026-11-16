@@ -28,6 +28,7 @@ const operations = [
   "task.skip", "task.reassign",
   "s1.package.prepare", "s1.package.get", "s1.package.part.chunk", "s1.package.part.copy",
   "review.package.prepare", "review.package.list", "review.package.part.chunk", "review.package.part.copy",
+  "s2.package.prepare", "s2.package.get", "s2.package.part.chunk", "s2.package.part.copy",
 ];
 
 async function connectedBridge(timeout = 1000) {

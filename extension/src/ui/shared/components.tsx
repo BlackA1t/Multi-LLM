@@ -1,23 +1,22 @@
 import { useEffect, useRef, useState, type RefObject } from "react";
 
-import type { ConnectionState, Phase, ResearchSession, ResearchTask, ResponseMetadata, ReviewerPackageMetadata, S1PackageMetadata, SessionSummary } from "../../native/contracts";
+import type { ConnectionState, Phase, ResearchSession, ResearchTask, ResponseMetadata, ReviewerPackageMetadata, S1PackageMetadata, S2PackageMetadata, SessionSummary } from "../../native/contracts";
 import { openOfficialProvider, PROVIDERS, providerById } from "../../state/provider-catalog";
 import { ArrowIcon, HistoryIcon, PlusIcon, RefreshIcon, StatusIcon, WorkspaceIcon } from "./icons";
 
 const PHASES: Array<{ phase: Phase; label: string }> = [
-  { phase: "INDEPENDENT", label: "Независимые ответы" },
-  { phase: "COMPARISON", label: "Синтез S1" },
-  { phase: "CRITIQUE", label: "Независимая проверка S1" },
+  { phase: "R0", label: "Независимые ответы" },
+  { phase: "S1", label: "Синтез S1" },
+  { phase: "S1_REVIEW", label: "Независимая проверка S1" },
+  { phase: "S2", label: "Финализация S2" },
 ];
 
 const phaseLabels: Record<Phase, string> = {
   DRAFT: "Подготовка",
-  INDEPENDENT: "Независимые ответы",
-  COMPARISON: "ChatGPT S1",
-  CRITIQUE: "Независимая проверка S1",
-  FACT_CHECK: "Проверка фактов",
-  ARBITRATION: "Арбитраж",
-  REVIEW: "Итоговая проверка",
+  R0: "Независимые ответы R0",
+  S1: "ChatGPT S1",
+  S1_REVIEW: "Независимая проверка S1",
+  S2: "ChatGPT S2",
   DONE: "Завершено",
 };
 
@@ -219,16 +218,24 @@ export interface TaskTools {
   onLoadReviewerPackages: () => Promise<ReviewerPackageMetadata[]>;
   onCopyReviewerPart: (packageId: string, partIndex: number) => Promise<unknown>;
   onLoadReviewerPart: (packageId: string, partIndex: number, sizeBytes: number) => Promise<string>;
+  onPrepareS2: () => Promise<unknown>;
+  onLoadS2Package: () => Promise<S2PackageMetadata>;
+  onCopyS2Part: (packageId: string, partIndex: number) => Promise<unknown>;
+  onLoadS2Part: (packageId: string, partIndex: number, sizeBytes: number) => Promise<string>;
 }
 
 export function TaskList({ tasks, phase, tools }: { tasks: ResearchTask[]; phase: Phase; tools?: TaskTools }) {
-  const phaseTasks = tasks.filter((task) => task.phase === phase);
-  const current = phase === "COMPARISON"
+  const phaseTasks = phase === "DONE"
+    ? tasks.filter((task) => task.kind === "S2_SYNTHESIS" && task.status !== "STALE")
+    : tasks.filter((task) => task.phase === phase);
+  const current = phase === "S1"
     ? phaseTasks.filter((task) => task.kind === "S1_SYNTHESIS")
-    : phase === "CRITIQUE"
+    : phase === "S1_REVIEW"
       ? phaseTasks.filter((task) => task.kind === "S1_REVIEW" && task.status !== "STALE")
-      : phaseTasks;
-  const mandatoryR0 = current.filter((task) => task.kind === "INDEPENDENT_RESPONSE");
+      : phase === "S2" || phase === "DONE"
+        ? phaseTasks.filter((task) => task.kind === "S2_SYNTHESIS" && task.status !== "STALE")
+        : phaseTasks;
+  const mandatoryR0 = current.filter((task) => task.kind === "R0_RESPONSE");
   const receivedR0 = mandatoryR0.filter((task) => task.status === "RECEIVED").length;
   const [prompt, setPrompt] = useState<{ task: ResearchTask; text: string; version: number; sha256: string } | null>(null);
   const [importTask, setImportTask] = useState<ResearchTask | null>(null);
@@ -240,6 +247,9 @@ export function TaskList({ tasks, phase, tools }: { tasks: ResearchTask[]; phase
   const [reviewPackages, setReviewPackages] = useState<ReviewerPackageMetadata[]>([]);
   const [reviewCopiedParts, setReviewCopiedParts] = useState<Record<string, Set<number>>>({});
   const [reviewPartView, setReviewPartView] = useState<{ package: ReviewerPackageMetadata; index: number; text: string } | null>(null);
+  const [s2Package, setS2Package] = useState<S2PackageMetadata | null>(null);
+  const [s2CopiedParts, setS2CopiedParts] = useState<Set<number>>(() => new Set());
+  const [s2PartView, setS2PartView] = useState<{ index: number; text: string } | null>(null);
   const [loading, setLoading] = useState(false);
   const [localError, setLocalError] = useState("");
   const openPrompt = async (task: ResearchTask) => {
@@ -336,22 +346,48 @@ export function TaskList({ tasks, phase, tools }: { tasks: ResearchTask[]; phase
     } catch { setLocalError("Не удалось загрузить часть reviewer package."); }
     finally { setLoading(false); }
   };
+  const loadS2Package = async (prepare = false) => {
+    if (!tools) return;
+    setLoading(true); setLocalError("");
+    try {
+      if (prepare) await tools.onPrepareS2();
+      setS2Package(await tools.onLoadS2Package());
+      setS2CopiedParts(new Set());
+    } catch { setLocalError("Не удалось подготовить или загрузить актуальный пакет S2."); }
+    finally { setLoading(false); }
+  };
+  const copyS2Part = async (partIndex: number) => {
+    if (!tools || !s2Package) return;
+    setLoading(true); setLocalError("");
+    try {
+      await tools.onCopyS2Part(s2Package.package_id, partIndex);
+      setS2CopiedParts((parts) => new Set(parts).add(partIndex));
+    } catch { setLocalError("Не удалось скопировать часть пакета S2."); }
+    finally { setLoading(false); }
+  };
+  const viewS2Part = async (partIndex: number, sizeBytes: number) => {
+    if (!tools || !s2Package) return;
+    setLoading(true); setLocalError("");
+    try { setS2PartView({ index: partIndex, text: await tools.onLoadS2Part(s2Package.package_id, partIndex, sizeBytes) }); }
+    catch { setLocalError("Не удалось загрузить часть пакета S2."); }
+    finally { setLoading(false); }
+  };
   const receivedReviews = current.filter((task) => task.status === "RECEIVED").length;
   const s1Task = tasks.find((task) => task.kind === "S1_SYNTHESIS");
   const s1Response = s1Task && tools?.responses.find((item) => item.task_id === s1Task.task_id);
   return <section className="task-section">
     <div className="section-heading compact">
       <p className="eyebrow">Задания этапа</p>
-      <h3>{phase === "INDEPENDENT" ? `Прогресс R0: ${receivedR0}/8` : phase === "COMPARISON" ? "ChatGPT Plus — первый синтез S1" : phase === "CRITIQUE" ? `Независимая проверка S1: ${receivedReviews}/3` : current.length ? `${current.length} задач` : "Задач пока нет"}</h3>
+      <h3>{phase === "R0" ? `Прогресс R0: ${receivedR0}/8` : phase === "S1" ? "ChatGPT Plus — первый синтез S1" : phase === "S1_REVIEW" ? `Независимая проверка S1: ${receivedReviews}/3` : phase === "S2" ? "Финализация ChatGPT S2" : phase === "DONE" ? "Итоговый отчёт S2" : current.length ? `${current.length} задач` : "Задач пока нет"}</h3>
     </div>
-    {phase === "COMPARISON" && !current.some((task) => task.kind === "S1_SYNTHESIS") && tools &&
+    {phase === "S1" && !current.some((task) => task.kind === "S1_SYNTHESIS") && tools &&
       <button type="button" className="primary-button" disabled={tools.busy || loading} onClick={() => void tools.onPrepareS1()}>Подготовить пакет S1</button>}
-    {phase === "CRITIQUE" && tools && <div className="task-actions review-stage-actions">
+    {phase === "S1_REVIEW" && tools && <div className="task-actions review-stage-actions">
       <button type="button" className="secondary-button" disabled={tools.busy || loading} onClick={() => void loadReviewPackages()}>{reviewPackages.length ? "Обновить пакеты" : "Показать пакеты"}</button>
       {(reviewPackages.length === 0 || reviewPackages.some((item) => item.stale)) && <button type="button" className="primary-button compact-button" disabled={tools.busy || loading} onClick={() => void prepareReviewers()}>Подготовить для текущей S1</button>}
       {s1Task && s1Response && <><button type="button" className="text-button" disabled={loading} onClick={() => void viewResponse(s1Response)}>Просмотреть S1</button><button type="button" className="text-button" disabled={tools.busy} onClick={() => setImportTask(s1Task)}>Новая редакция S1</button></>}
     </div>}
-    {phase === "CRITIQUE" && reviewPackages.some((item) => item.stale) && <p className="field-error" role="alert">S1 изменилась. Старые пакеты и рецензии сохранены, но не считаются актуальной проверкой. Подготовьте новый набор 0/3.</p>}
+    {phase === "S1_REVIEW" && reviewPackages.some((item) => item.stale) && <p className="field-error" role="alert">S1 изменилась. Старые пакеты и рецензии сохранены, но не считаются актуальной проверкой. Подготовьте новый набор 0/3.</p>}
     {current.length > 0 && <ul className="task-list">
       {current.map((task) => {
         const response = tools?.responses.find((item) => item.task_id === task.task_id);
@@ -359,7 +395,7 @@ export function TaskList({ tasks, phase, tools }: { tasks: ResearchTask[]; phase
           <span className="task-index">{task.ordinal + 1}</span>
           <div className="task-identity"><strong>{providerById(task.provider_id)?.label || task.provider_id || "Локальная операция"}</strong><span>{task.kind === "SEARCH_EVIDENCE" ? "Отдельный поиск · не входит в R0" : task.kind === "S1_SYNTHESIS" ? "Первый аналитический синтез" : task.role}</span></div>
           <span className={`status-badge status-${task.status.toLowerCase()}`}><span aria-hidden="true">●</span>{statusLabels[task.status]}</span>
-          {tools && task.phase === "INDEPENDENT" && <div className="task-actions">
+          {tools && task.phase === "R0" && <div className="task-actions">
             <button type="button" className="text-button" disabled={loading || tools.busy} onClick={() => void openPrompt(task)}>Задание</button>
             <button type="button" className="text-button" disabled={loading || tools.busy} onClick={() => void copyPrompt(task)}>Копировать</button>
             {task.provider_id && providerById(task.provider_id) && <button type="button" className="secondary-button" disabled={tools.busy} onClick={() => void openProvider(task)}>Открыть сайт</button>}
@@ -412,6 +448,30 @@ export function TaskList({ tasks, phase, tools }: { tasks: ResearchTask[]; phase
               </section> : <p className="action-help">Загрузите манифест пакетов, чтобы просмотреть и скопировать задание.</p>}
             </>;
           })()}
+          {tools && task.kind === "S2_SYNTHESIS" && <>
+            <div className="task-actions">
+              <button type="button" className="secondary-button" disabled={loading || tools.busy} onClick={() => void loadS2Package(false)}>{s2Package ? "Обновить манифест" : "Показать пакет S2"}</button>
+              {phase === "S2" && (!s2Package || s2Package.stale) && <button type="button" className="primary-button compact-button" disabled={loading || tools.busy} onClick={() => void loadS2Package(true)}>Подготовить актуальный пакет</button>}
+              {phase === "S2" && s2Package?.stale && <button type="button" className="text-button" disabled={loading || tools.busy} onClick={() => void prepareReviewers()}>Новые рецензии для изменённой S1</button>}
+              {phase === "S2" && <button type="button" className="secondary-button" disabled={tools.busy} onClick={() => void openProvider(task)}>Открыть новый чат ChatGPT</button>}
+              {!response && phase === "S2" && <button type="button" className="primary-button compact-button" disabled={tools.busy || !s2Package || s2Package.stale} onClick={() => setImportTask(task)}>Импортировать S2</button>}
+              {response && <><button type="button" className="secondary-button" disabled={loading} onClick={() => void viewResponse(response)}>Просмотреть S2</button><button type="button" className="text-button" disabled={tools.busy} onClick={() => setImportTask(task)}>Новая редакция S2</button></>}
+            </div>
+            {s2Package && <section className="s1-package" aria-label="Части пакета S2">
+              <p role="status">Скопировано частей: {s2CopiedParts.size}/{s2Package.part_count}</p>
+              <p className="response-meta">S1 v{s2Package.s1_result_version} · 3/3 рецензий · {s2Package.r0_complete ? "Полный R0 8/8" : "Частичный R0"} · {s2Package.total_bytes.toLocaleString("ru-RU")} байт · SHA-256 {s2Package.package_sha256.slice(0, 12)}…</p>
+              {s2Package.context_warning && <p className="field-error" role="alert">Большой контекст: деление на части не гарантирует, что ChatGPT вместит и обработает весь пакет. Проверьте объём до отправки.</p>}
+              {s2Package.stale && <p className="field-error" role="alert">Пакет устарел: версия S1 или одной из рецензий изменилась. Отправка заблокирована.</p>}
+              <ol className="s1-part-list">
+                {s2Package.parts.map((part) => <li key={part.part_index}>
+                  <span>Часть {part.part_index + 1}/{s2Package.part_count} · {part.size_bytes.toLocaleString("ru-RU")} байт</span>
+                  <button type="button" className="text-button" disabled={loading || tools.busy || s2Package.stale} onClick={() => void viewS2Part(part.part_index, part.size_bytes)}>Просмотреть</button>
+                  <button type="button" className="secondary-button" disabled={loading || tools.busy || s2Package.stale} onClick={() => void copyS2Part(part.part_index)}>{s2CopiedParts.has(part.part_index) ? "Скопировано" : "Копировать"}</button>
+                </li>)}
+              </ol>
+              <p className="action-help">Передайте все части по порядку в один новый чат ChatGPT Plus. Финализация начинается только после последней части.</p>
+            </section>}
+          </>}
           {task.gap_reason && <p className="task-reason">Причина: {task.gap_reason}</p>}
           {response && <p className="response-meta">Версия {response.version} · {response.size_bytes.toLocaleString("ru-RU")} байт · SHA-256 {response.sha256.slice(0, 12)}… · {new Date(response.created_at).toLocaleString("ru-RU")}</p>}
         </li>;
@@ -422,6 +482,7 @@ export function TaskList({ tasks, phase, tools }: { tasks: ResearchTask[]; phase
     {viewing && <TextDialog title={`Сохранённый ответ · версия ${viewing.response.version}`} text={viewing.text} onClose={() => setViewing(null)} />}
     {s1PartView && <TextDialog title={`Пакет S1 · часть ${s1PartView.index + 1}/${s1Package?.part_count ?? "?"}`} text={s1PartView.text} onClose={() => setS1PartView(null)} />}
     {reviewPartView && <TextDialog title={`${providerById(reviewPartView.package.provider_id)?.label ?? reviewPartView.package.provider_id} · часть ${reviewPartView.index + 1}/${reviewPartView.package.part_count}`} text={reviewPartView.text} onClose={() => setReviewPartView(null)} />}
+    {s2PartView && <TextDialog title={`Пакет S2 · часть ${s2PartView.index + 1}/${s2Package?.part_count ?? "?"}`} text={s2PartView.text} onClose={() => setS2PartView(null)} />}
     {importTask && tools && <ResponseImportDialog
       task={importTask}
       current={tools.responses.find((item) => item.task_id === importTask.task_id)}
@@ -566,7 +627,7 @@ export function SessionOverview({ session, tasks, syncing, tools, onUpdateIntake
     <TaskList tasks={tasks} phase={session.phase} tools={tools} />
     <div className="future-placeholder">
       <strong>Следующий этап</strong>
-      <p>{session.phase === "COMPARISON" ? "После сохранения S1 можно создать три независимых задания: DeepSeek, Grok и Gemini." : session.phase === "CRITIQUE" ? "После 3/3 данные будут готовы для будущего S2. Сам S2 в этом этапе не запускается." : "Переход выполняется только после серверной проверки полноты текущего этапа."}</p>
+      <p>{session.phase === "S1" ? "После сохранения S1 можно создать три независимых задания: DeepSeek, Grok и Gemini." : session.phase === "S1_REVIEW" ? "После 3/3 сервер подготовит финализацию S2." : session.phase === "S2" ? "Импорт действительного S2 завершит исследование автоматически." : session.phase === "DONE" ? "S2 сохранён неизменяемой версией; история исходных материалов доступна." : "Переход выполняется только после серверной проверки полноты текущего этапа."}</p>
     </div>
   </article>;
 }
@@ -582,14 +643,14 @@ export function SessionActions({ session, tasks, busy, onStart, onPause, onResum
   onAdvance: (gapReason?: string) => void;
 }) {
   const currentTasks = tasks.filter((task) => task.phase === session.phase);
-  const gateTasks = session.phase === "INDEPENDENT"
-    ? currentTasks.filter((task) => task.kind === "INDEPENDENT_RESPONSE")
+  const gateTasks = session.phase === "R0"
+    ? currentTasks.filter((task) => task.kind === "R0_RESPONSE")
     : currentTasks;
   const received = gateTasks.filter((task) => task.status === "RECEIVED").length;
   const skipped = gateTasks.filter((task) => task.status === "SKIPPED_WITH_REASON").length;
-  const needsGapReason = session.phase === "INDEPENDENT" && received === 7 && skipped === 1;
+  const needsGapReason = session.phase === "R0" && received === 7 && skipped === 1;
   const [transitionReason, setTransitionReason] = useState("");
-  const canAdvance = session.status === "ACTIVE" && !["DRAFT", "CRITIQUE", "DONE"].includes(session.phase);
+  const canAdvance = session.status === "ACTIVE" && !["DRAFT", "S2", "DONE"].includes(session.phase);
   return <aside className="panel-card action-panel" aria-label="Действия сессии">
     <div className="section-heading compact"><p className="eyebrow">Управление</p><h2>Доступные действия</h2></div>
     {session.phase === "DRAFT" && session.status === "ACTIVE" &&
@@ -599,13 +660,14 @@ export function SessionActions({ session, tasks, busy, onStart, onPause, onResum
     {["PAUSED", "BLOCKED"].includes(session.status) &&
       <button className="primary-button full-width" type="button" onClick={onResume} disabled={busy}>Возобновить</button>}
     <button className="secondary-button full-width" type="button" onClick={onRefresh} disabled={busy}><RefreshIcon />Обновить</button>
-    {session.phase !== "DRAFT" && session.phase !== "CRITIQUE" && session.phase !== "DONE" && <>
+    {session.phase !== "DRAFT" && session.phase !== "S2" && session.phase !== "DONE" && <>
       {needsGapReason && <><label htmlFor="transition-gap-reason">Причина перехода с пропуском</label><textarea id="transition-gap-reason" rows={3} value={transitionReason} onChange={(event) => setTransitionReason(event.target.value)} disabled={busy} /></>}
       <button className="secondary-button full-width" type="button" onClick={() => onAdvance(transitionReason)} disabled={busy || !canAdvance || (needsGapReason && !transitionReason.trim())}>Следующий этап <ArrowIcon /></button>
       <p className="action-help">Получено: {received} из {gateTasks.length}. Итоговое решение о переходе принимает Python Host.</p>
     </>}
-    {session.phase === "COMPARISON" && <p className="action-help">После получения S1 сервер создаст ровно три независимых reviewer package.</p>}
-    {session.phase === "CRITIQUE" && <p className="action-help">Получено актуальных рецензий: {received} из 3. FACT_CHECK и старый маршрут отключены; S2 будет отдельным этапом.</p>}
+    {session.phase === "S1" && <p className="action-help">После получения S1 сервер создаст ровно три независимых reviewer package.</p>}
+    {session.phase === "S1_REVIEW" && <p className="action-help">Получено актуальных рецензий: {received} из 3. После 3/3 переход создаст ровно одно задание ChatGPT S2.</p>}
+    {session.phase === "S2" && <p className="action-help">Передайте пакет вручную и импортируйте итог. Успешный импорт автоматически завершит исследование.</p>}
   </aside>;
 }
 

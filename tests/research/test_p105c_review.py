@@ -73,13 +73,14 @@ def test_review_requires_received_current_s1_and_creates_exact_fixed_set(tmp_pat
         session.session_id, expected_revision=service.get(session.session_id).revision,
         idempotency_key="advance-review",
     )
-    assert review.phase == Phase.CRITIQUE
+    assert review.phase == Phase.S1_REVIEW
     tasks = [task for task in service.list_tasks(session.session_id)
              if task.kind == TaskKind.S1_REVIEW]
     assert [task.provider_id for task in tasks] == list(REVIEWER_PROVIDERS)
     assert all(task.role == "s1_reviewer" and task.status == TaskStatus.PROMPT_READY for task in tasks)
-    assert not [task for task in service.list_tasks(session.session_id)
-                if task.kind in {TaskKind.CRITIQUE, TaskKind.FACT_CHECK}]
+    assert {task.kind for task in service.list_tasks(session.session_id)} <= {
+        TaskKind.R0_RESPONSE, TaskKind.S1_SYNTHESIS, TaskKind.S1_REVIEW,
+    }
 
 
 def test_review_transition_rejects_s1_whose_r0_package_is_stale(tmp_path):
@@ -141,7 +142,7 @@ def test_packages_are_complete_deterministic_isolated_and_idempotent(tmp_path):
 def test_partial_r0_is_preserved_in_reviewer_manifest(tmp_path):
     service, session = _started(tmp_path)
     tasks = [task for task in service.list_tasks(session.session_id)
-             if task.kind == TaskKind.INDEPENDENT_RESPONSE]
+             if task.kind == TaskKind.R0_RESPONSE]
     for index, task in enumerate(tasks[:7]):
         _upload(service, session.session_id, task, f"answer {index}", f"r0-{index}")
     current = service.get(session.session_id)
@@ -192,12 +193,13 @@ def test_three_reviews_are_independent_versioned_linked_and_restart_safe(tmp_pat
         assert connection.execute("SELECT COUNT(*) FROM reviewer_result_links").fetchone()[0] == 3
         assert connection.execute("SELECT COUNT(*) FROM response_revisions WHERE result_id = ?",
                                   (str(revised.response.result_id),)).fetchone()[0] == 2
-    with pytest.raises(ResearchDomainError) as blocked:
-        restarted.advance(
-            review.session_id, expected_revision=restarted.get(review.session_id).revision,
-            idempotency_key="no-fact-check",
-        )
-    assert blocked.value.code == "NOT_IMPLEMENTED"
+    s2 = restarted.advance(
+        review.session_id, expected_revision=restarted.get(review.session_id).revision,
+        idempotency_key="advance-s2",
+    )
+    assert s2.phase == Phase.S2
+    assert [task.kind for task in restarted.list_tasks(review.session_id)
+            if task.phase == Phase.S2] == [TaskKind.S2_SYNTHESIS]
 
 
 def test_new_s1_revision_stales_old_packages_and_requires_new_review_set(tmp_path):

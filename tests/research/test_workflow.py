@@ -32,14 +32,14 @@ def test_session_and_task_status_transitions_reject_invalid_moves():
 
 
 def test_independent_gate_requires_eight_or_explicit_seven_response_gap():
-    assert not RoundManager.validate_gate(Phase.INDEPENDENT, [TaskStatus.RECEIVED] * 8, None)
+    assert not RoundManager.validate_gate(Phase.R0, [TaskStatus.RECEIVED] * 8, None)
     assert RoundManager.validate_gate(
-        Phase.INDEPENDENT,
+        Phase.R0,
         [TaskStatus.RECEIVED] * 7 + [TaskStatus.SKIPPED_WITH_REASON],
         "eighth provider unavailable",
         [None] * 7 + ["provider unavailable"],
     )
     with pytest.raises(ResearchDomainError):
-        RoundManager.validate_gate(Phase.INDEPENDENT, [TaskStatus.RECEIVED] * 3, None)
+        RoundManager.validate_gate(Phase.R0, [TaskStatus.RECEIVED] * 3, None)
     with pytest.raises(ResearchDomainError):
-        RoundManager.validate_gate(Phase.INDEPENDENT, [TaskStatus.RECEIVED] * 2, "two missing")
+        RoundManager.validate_gate(Phase.R0, [TaskStatus.RECEIVED] * 2, "two missing")

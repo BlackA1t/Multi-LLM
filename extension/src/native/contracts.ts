@@ -9,12 +9,10 @@ export type ConnectionState =
 
 export type Phase =
   | "DRAFT"
-  | "INDEPENDENT"
-  | "COMPARISON"
-  | "CRITIQUE"
-  | "FACT_CHECK"
-  | "ARBITRATION"
-  | "REVIEW"
+  | "R0"
+  | "S1"
+  | "S1_REVIEW"
+  | "S2"
   | "DONE";
 
 export type SessionStatus =
@@ -232,6 +230,30 @@ export interface ReviewerPrepareReceipt {
   session: ResearchSession;
 }
 
+export interface S2ReviewReference {
+  ordinal: number;
+  provider_id: string;
+  task_id: string;
+  result_id: string;
+  result_version: number;
+  sha256: string;
+  reviewer_package_id: string;
+}
+
+export interface S2PackageMetadata extends Omit<S1PackageMetadata, "inputs"> {
+  s1_result_id: string;
+  s1_result_version: number;
+  s1_package_id: string;
+  context_warning: boolean;
+  reviews: S2ReviewReference[];
+  inputs: S1InputReference[];
+}
+
+export interface S2PrepareReceipt {
+  package: S2PackageMetadata;
+  session: ResearchSession;
+}
+
 export interface BridgeStatusMessage {
   kind: "bridge.status";
 }
@@ -288,7 +310,7 @@ export function isUiMessage(value: unknown): value is UiMessage {
     && isRecord(value.args);
 }
 
-const phases = new Set<Phase>(["DRAFT", "INDEPENDENT", "COMPARISON", "CRITIQUE", "FACT_CHECK", "ARBITRATION", "REVIEW", "DONE"]);
+const phases = new Set<Phase>(["DRAFT", "R0", "S1", "S1_REVIEW", "S2", "DONE"]);
 const sessionStatuses = new Set<SessionStatus>(["ACTIVE", "PAUSED", "BLOCKED", "COMPLETED", "COMPLETED_WITH_GAPS", "CANCELLED"]);
 const taskStatuses = new Set<TaskStatus>(["PENDING", "PROMPT_READY", "AWAITING_USER", "RECEIVED", "UNAVAILABLE", "SKIPPED_WITH_REASON", "STALE", "FAILED"]);
 
@@ -421,4 +443,21 @@ export function isReviewerPackageList(value: unknown): value is { items: Reviewe
 export function isReviewerPrepareReceipt(value: unknown): value is ReviewerPrepareReceipt {
   return isRecord(value) && Array.isArray(value.packages)
     && value.packages.every(isReviewerPackageMetadata) && isResearchSession(value.session);
+}
+
+export function isS2PackageMetadata(value: unknown): value is S2PackageMetadata {
+  return isRecord(value) && isS1PackageMetadata(value)
+    && typeof value.s1_result_id === "string"
+    && Number.isInteger(value.s1_result_version)
+    && typeof value.s1_package_id === "string"
+    && typeof value.context_warning === "boolean"
+    && Array.isArray(value.reviews) && value.reviews.every((review) => isRecord(review)
+      && Number.isInteger(review.ordinal) && typeof review.provider_id === "string"
+      && typeof review.task_id === "string" && typeof review.result_id === "string"
+      && Number.isInteger(review.result_version) && typeof review.sha256 === "string"
+      && typeof review.reviewer_package_id === "string");
+}
+
+export function isS2PrepareReceipt(value: unknown): value is S2PrepareReceipt {
+  return isRecord(value) && isS2PackageMetadata(value.package) && isResearchSession(value.session);
 }

@@ -9,7 +9,6 @@ import pytest
 from multi_llm.research import ResearchSessionService, TaskStatus
 from multi_llm.research.provider_catalog import R0_ASSIGNMENTS
 from multi_llm.research.repository import MAX_CHUNK_BYTES, MAX_RESPONSE_BYTES
-from multi_llm.research.migration import MIGRATIONS
 from multi_llm.research.native_protocol import NativeDispatcher, encode_message
 from multi_llm.research.workflow import ResearchDomainError
 
@@ -27,41 +26,16 @@ def started_service(tmp_path, *, clipboard_writer=lambda _text: None):
     return service, session, service.list_tasks(session.session_id)
 
 
-def test_v1_database_migrates_without_losing_session_task_or_prompt(tmp_path):
+def test_legacy_database_is_preserved_and_rejected_without_mutation(tmp_path):
     path = tmp_path / "research.db"
-    session_id, round_id, task_id, prompt_id = [str(uuid4()) for _ in range(4)]
     with sqlite3.connect(path) as connection:
         connection.execute("CREATE TABLE schema_migrations(version INTEGER PRIMARY KEY, applied_at TEXT)")
-        connection.executescript(MIGRATIONS[0][1])
         connection.execute("INSERT INTO schema_migrations VALUES (1, CURRENT_TIMESTAMP)")
-        now = "2026-11-14T00:00:00+00:00"
-        connection.execute(
-            "INSERT INTO research_sessions VALUES (?, ?, ?, 'INDEPENDENT', 'ACTIVE', 3, NULL, ?, ?, ?)",
-            (session_id, "P103 question", "P103 Runtime Test", "p103-create", now, now),
-        )
-        connection.execute(
-            "INSERT INTO research_rounds VALUES (?, ?, 'INDEPENDENT', 1, 'ACTIVE', ?)",
-            (round_id, session_id, now),
-        )
-        connection.execute(
-            "INSERT INTO research_tasks VALUES (?, ?, ?, 'INDEPENDENT', 'INDEPENDENT_RESPONSE', 'gemini', 'role', 0, 'PROMPT_READY', NULL, 0, ?, ?)",
-            (task_id, session_id, round_id, now, now),
-        )
-        prompt = "original P103 prompt"
-        connection.execute(
-            "INSERT INTO prompt_artifacts VALUES (?, ?, 1, ?, ?, ?, ?)",
-            (prompt_id, task_id, prompt, len(prompt.encode()), hashlib.sha256(prompt.encode()).hexdigest(), now),
-        )
-    service = ResearchSessionService(path)
-    restored = service.get(session_id)
-    assert (restored.phase.value, restored.status.value, restored.revision) == ("INDEPENDENT", "ACTIVE", 3)
-    assert str(service.list_tasks(session_id)[0].task_id) == task_id
-    assert service.repository.get_prompt_text(session_id, task_id) == "original P103 prompt"
+    with pytest.raises(RuntimeError, match="Legacy research database"):
+        ResearchSessionService(path)
     with sqlite3.connect(path) as connection:
-        assert [row[0] for row in connection.execute("SELECT version FROM schema_migrations ORDER BY version")] == [1, 2, 3, 4, 5]
-    ResearchSessionService(path)
-    with sqlite3.connect(path) as connection:
-        assert connection.execute("SELECT COUNT(*) FROM schema_migrations").fetchone()[0] == 5
+        assert connection.execute("SELECT version FROM schema_migrations").fetchone()[0] == 1
+        assert not connection.execute("SELECT 1 FROM sqlite_master WHERE name = 'schema_identity'").fetchone()
 
 
 def upload(
@@ -302,7 +276,7 @@ def test_gate_requires_exact_states_and_stored_reason(tmp_path):
         session.session_id, expected_revision=session.revision,
         idempotency_key="good-gap", gap_reason="accepted missing source",
     )
-    assert advanced.phase.value == "COMPARISON"
+    assert advanced.phase.value == "S1"
 
 
 def test_limits_reject_oversize_without_staging(tmp_path):

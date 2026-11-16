@@ -46,7 +46,7 @@ def test_s1_phase_survives_service_restart_and_requires_received_s1(tmp_path):
     service = ResearchSessionService(path)
     session = service.create(question="Исследовать тему 🚀", idempotency_key="create")
     session = service.start(session.session_id, expected_revision=0, idempotency_key="start", assignments=assignments())
-    assert session.phase == Phase.INDEPENDENT
+    assert session.phase == Phase.R0
 
     for index, task in enumerate(service.list_tasks(session.session_id)):
         import_answer(service, session.session_id, task, f"answer-{index}", f"answer-{index}")
@@ -55,7 +55,7 @@ def test_s1_phase_survives_service_restart_and_requires_received_s1(tmp_path):
         session.session_id, expected_revision=service.get(session.session_id).revision,
         idempotency_key="advance-s1",
     )
-    assert session.phase == Phase.COMPARISON
+    assert session.phase == Phase.S1
     package = ResearchSessionService(path).s1_package(session.session_id)
     assert package.r0_complete is True and package.part_count >= 1
     with pytest.raises(ResearchDomainError, match="incomplete"):
@@ -92,7 +92,7 @@ def test_seven_response_gap_is_recorded_and_finishes_with_gaps(tmp_path):
         session.session_id, expected_revision=service.get(session.session_id).revision,
         idempotency_key="with-gap", gap_reason="provider unavailable",
     )
-    assert advanced.phase == Phase.COMPARISON
+    assert advanced.phase == Phase.S1
     assert advanced.gap_reason == "provider unavailable"
 
 
